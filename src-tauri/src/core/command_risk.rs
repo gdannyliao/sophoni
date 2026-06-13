@@ -69,31 +69,9 @@ pub fn classify_command(command: &str, _workspace_root: &str) -> CommandRisk {
 }
 
 fn has_shell_structure_risk(normalized: &str) -> bool {
-    let shell_compound_markers = [";", "&&", "||", "`", "$(", "> /", ">/"];
+    let shell_structure_markers = [";", "&&", "||", "|", ">", "<", "&", "\n", "`", "$("];
 
-    if shell_compound_markers
+    shell_structure_markers
         .iter()
         .any(|marker| normalized.contains(marker))
-    {
-        return true;
-    }
-
-    normalized.split('|').skip(1).any(|segment| {
-        let Some(command) = segment.split_whitespace().next() else {
-            return false;
-        };
-        let command = command.trim_matches(['"', '\'']);
-
-        matches!(
-            command,
-            "sh" | "bash"
-                | "/bin/sh"
-                | "/bin/bash"
-                | "python"
-                | "python3"
-                | "ruby"
-                | "perl"
-                | "node"
-        )
-    })
 }

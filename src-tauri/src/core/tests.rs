@@ -124,6 +124,34 @@ fn compound_rg_commands_are_high_risk() {
         classify_command("rg foo | /bin/bash", "/tmp/project"),
         CommandRisk::High
     );
+    assert_eq!(
+        classify_command("rg foo | xargs rm -rf /tmp/x", "/tmp/project"),
+        CommandRisk::High
+    );
+    assert_eq!(
+        classify_command("rg foo | sudo sh", "/tmp/project"),
+        CommandRisk::High
+    );
+    assert_eq!(
+        classify_command("rg foo | xargs sh -c 'rm -rf /tmp/x'", "/tmp/project"),
+        CommandRisk::High
+    );
+    assert_eq!(
+        classify_command("rg foo | tee /etc/passwd", "/tmp/project"),
+        CommandRisk::High
+    );
+    assert_eq!(
+        classify_command("rg foo > results.txt", "/tmp/project"),
+        CommandRisk::High
+    );
+    assert_eq!(
+        classify_command("rg foo & rm -rf /tmp/x", "/tmp/project"),
+        CommandRisk::High
+    );
+    assert_eq!(
+        classify_command("rg foo\nrm -rf /tmp/x", "/tmp/project"),
+        CommandRisk::High
+    );
 }
 
 #[test]
