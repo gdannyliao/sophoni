@@ -1,0 +1,12 @@
+#![allow(dead_code)]
+
+pub mod agent;
+pub mod command_risk;
+pub mod diff;
+pub mod domain;
+pub mod errors;
+pub mod storage;
+pub mod workspace;
+
+#[cfg(test)]
+mod tests;
