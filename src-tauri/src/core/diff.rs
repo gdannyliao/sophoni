@@ -12,6 +12,9 @@ pub fn unified_diff(old: &str, new: &str) -> String {
         };
         output.push_str(prefix);
         output.push_str(change.value());
+        if !change.value().ends_with('\n') {
+            output.push('\n');
+        }
     }
 
     output

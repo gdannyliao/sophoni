@@ -34,6 +34,7 @@ impl WorkspaceFs {
     }
 
     pub fn write_text_with_snapshot(&self, path: &Path, next_text: &str) -> AppResult<WriteResult> {
+        self.ensure_write_target_is_not_symlink(path)?;
         self.ensure_inside_root(path)?;
         let previous_text = if path.exists() {
             self.read_text(path)?
@@ -52,6 +53,17 @@ impl WorkspaceFs {
             next_text: next_text.to_string(),
             diff,
         })
+    }
+
+    fn ensure_write_target_is_not_symlink(&self, path: &Path) -> AppResult<()> {
+        match std::fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                Err(AppError::OutsideWorkspace(path.display().to_string()))
+            }
+            Ok(_) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
     }
 
     fn ensure_inside_root(&self, path: &Path) -> AppResult<()> {
