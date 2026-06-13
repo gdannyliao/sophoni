@@ -83,6 +83,22 @@ fn configured_test_commands_are_low_risk() {
 }
 
 #[test]
+fn rg_commands_are_low_risk_unless_piped_to_shell() {
+    assert_eq!(
+        classify_command("rg sudo src", "/tmp/project"),
+        CommandRisk::Low
+    );
+    assert_eq!(
+        classify_command("rg \"chmod \" src", "/tmp/project"),
+        CommandRisk::Low
+    );
+    assert_eq!(
+        classify_command("rg foo | sh", "/tmp/project"),
+        CommandRisk::High
+    );
+}
+
+#[test]
 fn storage_initializes_schema_and_creates_workspace() {
     let storage = Storage::open_in_memory().unwrap();
     let workspace = storage.create_workspace("Demo", "/tmp/demo").unwrap();

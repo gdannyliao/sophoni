@@ -14,6 +14,14 @@ pub fn classify_command(command: &str, _workspace_root: &str) -> CommandRisk {
         return CommandRisk::High;
     }
 
+    if normalized.contains("| sh") || normalized.contains("| bash") {
+        return CommandRisk::High;
+    }
+
+    if normalized.starts_with("rg ") || normalized == "rg" {
+        return CommandRisk::Low;
+    }
+
     let high_risk_markers = [
         "rm ",
         "rm -",
@@ -54,10 +62,6 @@ pub fn classify_command(command: &str, _workspace_root: &str) -> CommandRisk {
     ];
 
     if exact_low_risk.contains(&normalized.as_str()) {
-        return CommandRisk::Low;
-    }
-
-    if normalized.starts_with("rg ") || normalized == "rg" {
         return CommandRisk::Low;
     }
 
