@@ -134,3 +134,36 @@ fn storage_enables_foreign_keys() {
 
     assert!(storage.foreign_keys_enabled().unwrap());
 }
+
+use super::workspace::WorkspaceFs;
+
+#[test]
+fn workspace_rejects_paths_outside_root() {
+    let root = std::env::temp_dir().join(format!("sophoni-test-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+
+    let fs = WorkspaceFs::new(root.clone());
+    let outside = root.parent().unwrap().join("outside.txt");
+    let err = fs.read_text(&outside).unwrap_err().to_string();
+
+    assert!(err.contains("outside allowed root"));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn workspace_writes_file_and_returns_diff() {
+    let root = std::env::temp_dir().join(format!("sophoni-test-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    let file = root.join("hello.txt");
+    std::fs::write(&file, "hello\n").unwrap();
+
+    let fs = WorkspaceFs::new(root.clone());
+    let result = fs.write_text_with_snapshot(&file, "hello world\n").unwrap();
+
+    assert_eq!(result.previous_text, "hello\n");
+    assert!(result.diff.contains("-hello"));
+    assert!(result.diff.contains("+hello world"));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "hello world\n");
+
+    std::fs::remove_dir_all(root).unwrap();
+}
