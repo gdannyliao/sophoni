@@ -99,6 +99,48 @@ fn rg_commands_are_low_risk_unless_piped_to_shell() {
 }
 
 #[test]
+fn compound_rg_commands_are_high_risk() {
+    assert_eq!(
+        classify_command("rg foo; rm -rf /tmp/x", "/tmp/project"),
+        CommandRisk::High
+    );
+    assert_eq!(
+        classify_command("rg foo && sudo chmod 777 file", "/tmp/project"),
+        CommandRisk::High
+    );
+    assert_eq!(
+        classify_command("rg foo > /etc/passwd", "/tmp/project"),
+        CommandRisk::High
+    );
+    assert_eq!(
+        classify_command("rg foo|sh", "/tmp/project"),
+        CommandRisk::High
+    );
+    assert_eq!(
+        classify_command("rg foo|bash", "/tmp/project"),
+        CommandRisk::High
+    );
+    assert_eq!(
+        classify_command("rg foo | /bin/bash", "/tmp/project"),
+        CommandRisk::High
+    );
+}
+
+#[test]
+fn common_commands_are_low_risk() {
+    assert_eq!(classify_command("ls", "/tmp/project"), CommandRisk::Low);
+    assert_eq!(classify_command("ls -la", "/tmp/project"), CommandRisk::Low);
+    assert_eq!(
+        classify_command("git status", "/tmp/project"),
+        CommandRisk::Low
+    );
+    assert_eq!(
+        classify_command("yarn test", "/tmp/project"),
+        CommandRisk::Low
+    );
+}
+
+#[test]
 fn storage_initializes_schema_and_creates_workspace() {
     let storage = Storage::open_in_memory().unwrap();
     let workspace = storage.create_workspace("Demo", "/tmp/demo").unwrap();
