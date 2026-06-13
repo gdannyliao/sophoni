@@ -10,6 +10,10 @@ pub enum AppError {
     Io(#[from] std::io::Error),
     #[error("sqlite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
+    #[error("uuid parse error: {0}")]
+    Uuid(#[from] uuid::Error),
+    #[error("timestamp parse error: {0}")]
+    ChronoParse(#[from] chrono::ParseError),
     #[error("serialization error: {0}")]
     Serde(#[from] serde_json::Error),
     #[error("{0}")]

@@ -12,6 +12,7 @@ pub struct Storage {
 impl Storage {
     pub fn open(path: impl AsRef<std::path::Path>) -> AppResult<Self> {
         let conn = Connection::open(path)?;
+        conn.execute_batch("PRAGMA foreign_keys = ON;")?;
         let storage = Self { conn };
         storage.migrate()?;
         Ok(storage)
@@ -19,6 +20,7 @@ impl Storage {
 
     pub fn open_in_memory() -> AppResult<Self> {
         let conn = Connection::open_in_memory()?;
+        conn.execute_batch("PRAGMA foreign_keys = ON;")?;
         let storage = Self { conn };
         storage.migrate()?;
         Ok(storage)
@@ -103,23 +105,27 @@ impl Storage {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, path, last_opened_at FROM workspaces ORDER BY last_opened_at DESC",
         )?;
-        let rows = stmt.query_map([], |row| {
-            let id: String = row.get(0)?;
-            let last_opened_at: String = row.get(3)?;
-            Ok(Workspace {
-                id: Uuid::parse_str(&id).expect("workspace id should be a uuid"),
-                name: row.get(1)?,
-                path: row.get(2)?,
-                last_opened_at: DateTime::parse_from_rfc3339(&last_opened_at)
-                    .expect("workspace timestamp should be rfc3339")
-                    .with_timezone(&Utc),
-            })
-        })?;
+        let mut rows = stmt.query([])?;
 
         let mut workspaces = Vec::new();
-        for row in rows {
-            workspaces.push(row?);
+        while let Some(row) = rows.next()? {
+            let id: String = row.get(0)?;
+            let last_opened_at: String = row.get(3)?;
+            workspaces.push(Workspace {
+                id: Uuid::parse_str(&id)?,
+                name: row.get(1)?,
+                path: row.get(2)?,
+                last_opened_at: DateTime::parse_from_rfc3339(&last_opened_at)?.with_timezone(&Utc),
+            });
         }
         Ok(workspaces)
+    }
+
+    #[cfg(test)]
+    pub fn foreign_keys_enabled(&self) -> AppResult<bool> {
+        let enabled: i64 = self
+            .conn
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))?;
+        Ok(enabled == 1)
     }
 }
