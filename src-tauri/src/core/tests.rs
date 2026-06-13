@@ -145,8 +145,14 @@ fn workspace_rejects_paths_outside_root() {
     let fs = WorkspaceFs::new(root.clone());
     let outside = root.parent().unwrap().join("outside.txt");
     let err = fs.read_text(&outside).unwrap_err().to_string();
+    let traversal = root.join("../outside.txt");
+    let write_err = fs
+        .write_text_with_snapshot(&traversal, "outside\n")
+        .unwrap_err()
+        .to_string();
 
     assert!(err.contains("outside allowed root"));
+    assert!(write_err.contains("outside allowed root"));
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -164,6 +170,25 @@ fn workspace_writes_file_and_returns_diff() {
     assert!(result.diff.contains("-hello"));
     assert!(result.diff.contains("+hello world"));
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "hello world\n");
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn workspace_writes_nested_file_and_creates_parent_dirs() {
+    let root = std::env::temp_dir().join(format!("sophoni-test-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    let file = root.join("nested/hello.txt");
+
+    let fs = WorkspaceFs::new(root.clone());
+    let result = fs
+        .write_text_with_snapshot(&file, "hello nested\n")
+        .unwrap();
+
+    assert_eq!(result.previous_text, "");
+    assert!(result.diff.contains("+hello nested"));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "hello nested\n");
+    assert!(root.join("nested").is_dir());
 
     std::fs::remove_dir_all(root).unwrap();
 }

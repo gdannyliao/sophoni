@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use super::diff::unified_diff;
 use super::errors::{AppError, AppResult};
@@ -56,17 +56,61 @@ impl WorkspaceFs {
 
     fn ensure_inside_root(&self, path: &Path) -> AppResult<()> {
         let root = self.root.canonicalize()?;
-        let canonical = if path.exists() {
-            path.canonicalize()?
-        } else {
-            let parent = path.parent().unwrap_or(path);
-            parent.canonicalize()?
-        };
 
+        if path.exists() {
+            let canonical = path.canonicalize()?;
+            if canonical.starts_with(&root) {
+                return Ok(());
+            }
+            return Err(AppError::OutsideWorkspace(path.display().to_string()));
+        }
+
+        let target = self.absolute_lexical_path(path, &root);
+        if !target.starts_with(&root) {
+            return Err(AppError::OutsideWorkspace(path.display().to_string()));
+        }
+
+        let mut existing_ancestor = target.as_path();
+        while !existing_ancestor.exists() {
+            existing_ancestor = existing_ancestor.parent().unwrap_or(existing_ancestor);
+        }
+
+        let canonical = existing_ancestor.canonicalize()?;
         if canonical.starts_with(&root) {
             Ok(())
         } else {
             Err(AppError::OutsideWorkspace(path.display().to_string()))
         }
     }
+
+    fn absolute_lexical_path(&self, path: &Path, canonical_root: &Path) -> PathBuf {
+        let absolute = if path.is_absolute() {
+            match path.strip_prefix(&self.root) {
+                Ok(relative) => canonical_root.join(relative),
+                Err(_) => path.to_path_buf(),
+            }
+        } else {
+            canonical_root.join(path)
+        };
+
+        lexical_normalize(&absolute)
+    }
+}
+
+fn lexical_normalize(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Normal(part) => normalized.push(part),
+        }
+    }
+
+    normalized
 }
