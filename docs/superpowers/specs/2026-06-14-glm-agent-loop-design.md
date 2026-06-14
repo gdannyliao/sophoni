@@ -67,7 +67,7 @@ src-tauri/src/
 ├── lib.rs                      [改] 注册新命令,初始化 State
 ├── core/
 │   ├── mod.rs                  [改] 导出新模块
-│   ├── domain.rs               [改] 加 ConversationTurn / ToolCall / ProviderResponse / AgentConfig / ToolSchema 等
+│   ├── domain.rs               [改] 加 ConversationTurn / AgentToolCall / ProviderResponse / AgentConfig / AgentToolSchema 等(注意:已有持久化用 ToolCall,新增类型加 Agent 前缀避免冲突)
 │   ├── errors.rs               [改] 加 Provider / Config 相关错误变体
 │   ├── agent.rs                [改★核心] mock 循环 → 真 Agent 循环
 │   ├── provider.rs             [新] AgentProvider trait + GlmProvider + FakeProvider
@@ -99,36 +99,38 @@ lib.rs → agent → provider → domain
 
 ### 领域类型(domain.rs 新增)
 
+> **命名约定**:domain.rs 已有一个持久化用的 `ToolCall`(DB 行,带 `task_run_id`/`input_json`)。为避免冲突,本 spec 新增的"Agent 运行时工具调用"相关类型一律加 `Agent` 前缀:`AgentToolCall` / `AgentToolName` / `AgentToolArgs` / `AgentToolResult` / `AgentToolSchema`。
+
 ```rust
 // 对话历史的一个条目,模型无关
 pub enum ConversationTurn {
     User { content: String },
     Assistant {
         content: Option<String>,
-        tool_calls: Vec<ToolCall>,
+        tool_calls: Vec<AgentToolCall>,
     },
     Tool {
         tool_call_id: String,
-        result: ToolResult,
+        result: AgentToolResult,
     },
 }
 
 pub struct SystemPrompt(pub String);
 
-pub enum ToolName { ReadFile, WriteFile }
+pub enum AgentToolName { ReadFile, WriteFile }
 
-pub enum ToolArgs {
+pub enum AgentToolArgs {
     Read { path: String },
     Write { path: String, content: String },
 }
 
-pub struct ToolCall {
+pub struct AgentToolCall {
     pub id: String,
-    pub name: ToolName,
-    pub arguments: ToolArgs,
+    pub name: AgentToolName,
+    pub arguments: AgentToolArgs,
 }
 
-pub struct ToolResult {
+pub struct AgentToolResult {
     pub tool_call_id: String,
     pub content: String,
     pub is_error: bool,
@@ -137,11 +139,11 @@ pub struct ToolResult {
 
 // Provider 给 Agent 的响应
 pub enum ProviderResponse {
-    ToolCalls(Vec<ToolCall>),   // 模型要调工具,循环继续
-    FinalAnswer(String),         // 最终答案,循环结束
+    ToolCalls(Vec<AgentToolCall>),   // 模型要调工具,循环继续
+    FinalAnswer(String),              // 最终答案,循环结束
 }
 
-pub struct ToolSchema {
+pub struct AgentToolSchema {
     pub name: &'static str,
     pub description: &'static str,
     pub parameters: serde_json::Value,   // JSON Schema
@@ -168,9 +170,9 @@ pub struct ConfigStatus {
 ### tool_schemas() 具体定义
 
 ```rust
-fn tool_schemas() -> Vec<ToolSchema> {
+fn tool_schemas() -> Vec<AgentToolSchema> {
     vec![
-        ToolSchema {
+        AgentToolSchema {
             name: "read_file",
             description: "读取工作区内指定文件的文本内容。路径相对于工作区根目录。",
             parameters: json!({
@@ -181,7 +183,7 @@ fn tool_schemas() -> Vec<ToolSchema> {
                 "required": ["path"]
             }),
         },
-        ToolSchema {
+        AgentToolSchema {
             name: "write_file",
             description: "向工作区内指定文件写入文本内容(覆盖)。路径相对于工作区根目录。",
             parameters: json!({
@@ -209,7 +211,7 @@ pub enum AppError {
 }
 ```
 
-**工具的业务错误(文件不存在、越界、写入失败)不抛 Err,返回 `ToolResult { is_error: true }`** 让模型自纠。只有系统级错误才抛 `Err`。
+**工具的业务错误(文件不存在、越界、写入失败)不抛 Err,返回 `AgentToolResult { is_error: true }`** 让模型自纠。只有系统级错误才抛 `Err`。
 
 ### Agent 循环(agent.rs)
 
@@ -307,7 +309,7 @@ fn push_event(events: &mut Vec<AgentEvent>, app: &AppHandle, event: AgentEvent) 
 
 1. **事件双推**:每次 push 都 emit 给前端,任务结束返回值再兜底同步(防事件丢失/乱序)。
 2. **三重刹车**:取消、总超时(120s)、单轮超时(30s),都是 break 不是 return Err,保留已完成步骤。
-3. **越界拦截在工具层**,agent 循环只看 `ToolResult.is_error`。
+3. **越界拦截在工具层**,agent 循环只看 `AgentToolResult.is_error`。
 4. **system prompt 硬编码**,不可配(MVP 阶段便于迭代)。
 5. **`tool_schemas()` 是纯静态函数**,返回 `read_file` / `write_file` 的 JSON Schema 描述。
 
@@ -320,7 +322,7 @@ pub trait AgentProvider: Send {
         &mut self,
         system: &SystemPrompt,
         turns: &[ConversationTurn],
-        tools: &[ToolSchema],
+        tools: &[AgentToolSchema],
     ) -> Result<ProviderResponse, AppError>;
 }
 
@@ -359,28 +361,34 @@ mod glm_dto {
 
 ```rust
 pub struct ToolDispatcher {
-    workspace_root: PathBuf,
+    fs: WorkspaceFs,    // 复用 foundation,内部已含 ensure_inside_root + symlink 防护 + 文件大小限制
 }
 
 impl ToolDispatcher {
-    pub async fn dispatch(&self, call: &ToolCall) -> Result<ToolResult, AppError> {
+    pub fn new(root: PathBuf) -> Self {
+        Self { fs: WorkspaceFs::new(root) }
+    }
+
+    pub async fn dispatch(&self, call: &AgentToolCall) -> Result<AgentToolResult, AppError> {
         match (&call.name, &call.arguments) {
-            (ReadFile, ToolArgs::Read { path }) => self.read_file(&call.id, path).await,
-            (WriteFile, ToolArgs::Write { path, content }) => self.write_file(&call.id, path, content).await,
+            (AgentToolName::ReadFile, AgentToolArgs::Read { path }) => self.read_file(&call.id, path).await,
+            (AgentToolName::WriteFile, AgentToolArgs::Write { path, content }) => self.write_file(&call.id, path, content).await,
             _ => Err(AppError::Tool("工具名与参数不匹配".into())),
         }
     }
-    // read_file: ensure_inside_root → tokio::fs::read_to_string
-    // write_file: ensure_inside_root → workspace::write_text_with_snapshot(复用 foundation)
+    // read_file: 直接调 self.fs.read_text(path)(内部已 ensure_inside_root)
+    //            成功 → content;失败 → is_error 喂回模型
+    // write_file: 直接调 self.fs.write_text_with_snapshot(path, content)
+    //            成功 → 构造 FileChange 填进 AgentToolResult.file_change
 }
 ```
 
 **关键设计点**:
 
-1. **工具业务错误返回 `ToolResult { is_error: true }`**,不抛 Err。模型能"看到"错误并自纠(读不存在文件 → 换路径)。
-2. **`ToolResult.file_change: Option<FileChange>`**:write_file 时 Some,read_file 时 None。agent 循环从这里拿 FileChange 累积。
-3. **越界拦截复用 `workspace::ensure_inside_root`**,foundation 已有。
-4. **ToolDispatcher 无状态**(只有 workspace_root),`&self` 共享,无需锁。
+1. **直接复用 `WorkspaceFs`,不重新调 `ensure_inside_root`**。`WorkspaceFs::read_text` / `write_text_with_snapshot` 内部已经做了越界检查 + symlink 防护 + 文件大小限制(1MB),工具层只是薄包装。foundation 的安全代码全部自动复用,DRY。
+2. **工具业务错误返回 `AgentToolResult { is_error: true }`**,不抛 Err。模型能"看到"错误并自纠(读不存在文件 → 换路径)。只有系统级错误(workspace 未初始化)才抛 `Err`。
+3. **`AgentToolResult.file_change: Option<FileChange>`**:write_file 时 Some(从 `WriteResult.diff` 构造 `FileChange`,填 `Uuid::new_v4()` / `Utc::now()` 等,参考 `run_mock_agent_task` 的做法),read_file 时 None。agent 循环从这里拿 FileChange 累积。
+4. **ToolDispatcher 无状态**(只持有 `WorkspaceFs`),`&self` 共享,无需锁。
 
 ### 配置层(config.rs)
 
@@ -409,7 +417,7 @@ async fn run_agent_task(
     app: AppHandle,
     workspace_root: String,
     prompt: String,
-) -> Result<AgentTaskResult, String>
+) -> Result<AgentTaskResult, AppError>
 
 #[tauri::command]
 fn cancel_agent_task(state: State<'_, AppState>)
@@ -421,7 +429,7 @@ fn get_config_status() -> ConfigStatus   // AgentConfig::status()
 **关键点**:
 - `run_agent_task` 每次开始前 `cancel.store(false)`,首次调用时 `AgentConfig::load()`(失败返回错误事件)。
 - 既有命令保留:`get_app_status`、`classify_command_risk`、`run_mock_task`。
-- **错误返回 `String`**,不返回 `AppError`(Tauri 命令边界统一转 String)。
+- **错误直接返回 `AppError`**:foundation 已为 `AppError` 实现了 `Serialize`(序列化成 `to_string()` 字符串),Tauri 命令边界复用即可,与既有 `run_mock_task` 命令的错误返回方式一致,不需要额外转 String。
 - **`workspace_root` 由前端硬编码传 `/tmp/sophoni`**,真实"打开工作区"是后续计划。
 
 ### 前端改动
@@ -471,7 +479,7 @@ export function onAgentEvent(cb: (e: AgentEvent) => void): Promise<UnlistenFn>
 - `to_glm_message(ConversationTurn::Tool)` → role="tool",tool_call_id 正确
 - `translate_response(GlmResponse 带 tool_calls)` → `ProviderResponse::ToolCalls`
 - `translate_response(GlmResponse 无 tool_calls)` → `ProviderResponse::FinalAnswer`
-- `parse_tool_call("read_file", {path: "x"})` → 正确的 `ToolCall`
+- `parse_tool_call("read_file", {path: "x"})` → 正确的 `AgentToolCall`
 
 ### 不做 L3
 
