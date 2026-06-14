@@ -6,19 +6,20 @@
   export let prompt = "";
   export let running = false;
   export let onRun: (prompt: string) => void = () => {};
+  export let onCancel: () => void = () => {};
 </script>
 
 <main class="conversation" aria-label="任务会话流">
   <header class="topbar">
     <div>
       <h1>桌面 Agent 工作台</h1>
-      <p>macOS MVP 基础骨架</p>
+      <p>macOS MVP · GLM 真连接入</p>
     </div>
   </header>
 
   <div class="messages">
     {#each events as event}
-      <article class="event">
+      <article class="event" data-kind={event.kind}>
         <span>{event.kind}</span>
         <h3>{event.title}</h3>
         <p>{event.body}</p>
@@ -31,7 +32,10 @@
   </div>
 
   <form class="composer" on:submit|preventDefault={() => onRun(prompt)}>
-    <input aria-label="任务输入" placeholder="让 Agent 搜索、修改或解释当前工作区..." bind:value={prompt} />
-    <button type="submit" disabled={running}>{running ? "运行中..." : "运行 mock 任务"}</button>
+    <input aria-label="任务输入" placeholder="让 Agent 读取、修改工作区文件..." bind:value={prompt} />
+    <button type="submit" disabled={running}>{running ? "运行中..." : "运行任务"}</button>
+    {#if running}
+      <button type="button" class="cancel" on:click={onCancel}>取消</button>
+    {/if}
   </form>
 </main>

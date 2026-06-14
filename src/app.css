@@ -78,6 +78,12 @@ h2 {
   cursor: default;
 }
 
+.composer button.cancel {
+  background: transparent;
+  color: #c0392b;
+  border-color: #c0392b;
+}
+
 .list-item {
   width: 100%;
   text-align: left;
