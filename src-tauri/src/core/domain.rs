@@ -91,3 +91,76 @@ pub struct AgentEvent {
     pub title: String,
     pub body: String,
 }
+
+// ── Agent runtime types (model-agnostic) ──
+// Prefixed with `Agent` to distinguish from persistence types above.
+
+#[derive(Debug, Clone)]
+pub enum ConversationTurn {
+    User { content: String },
+    Assistant {
+        content: Option<String>,
+        tool_calls: Vec<AgentToolCall>,
+    },
+    Tool {
+        tool_call_id: String,
+        result: AgentToolResult,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct SystemPrompt(pub String);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentToolName {
+    ReadFile,
+    WriteFile,
+}
+
+#[derive(Debug, Clone)]
+pub enum AgentToolArgs {
+    Read { path: String },
+    Write { path: String, content: String },
+}
+
+#[derive(Debug, Clone)]
+pub struct AgentToolCall {
+    pub id: String,
+    pub name: AgentToolName,
+    pub arguments: AgentToolArgs,
+}
+
+#[derive(Debug, Clone)]
+pub struct AgentToolResult {
+    pub tool_call_id: String,
+    pub content: String,
+    pub is_error: bool,
+    pub file_change: Option<FileChange>,
+}
+
+#[derive(Debug, Clone)]
+pub enum ProviderResponse {
+    ToolCalls(Vec<AgentToolCall>),
+    FinalAnswer(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct AgentToolSchema {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub parameters: serde_json::Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct AgentConfig {
+    pub api_key: String,
+    pub model: String,
+    pub base_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigStatus {
+    pub configured: bool,
+    pub model: String,
+}
