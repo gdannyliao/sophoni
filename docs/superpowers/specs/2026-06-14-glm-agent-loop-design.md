@@ -488,6 +488,46 @@ export function onAgentEvent(cb: (e: AgentEvent) => void): Promise<UnlistenFn>
 5. **越界拦截**:L2 测试用 FakeProvider 直接返回越界 tool_call(`write_file` 到 `/etc/passwd`),验证 tool_result 是 `is_error: true`,真实文件系统未被触碰。手动验收层面不强求真实 GLM 触发越界(模型行为不可控)。
 6. **测试**:`cargo test`(含 L1 + L2)、`pnpm test`、`pnpm check`、`pnpm build` 全绿。
 
+## 工具演进策略
+
+这一版只提供 `read_file` + `write_file` 两个工具,是有意的最小集。后续工具的增加遵循以下原则,避免无序扩张。
+
+### 不预先堆工具,按能力缺口驱动
+
+每个新工具应该解决一个**真实使用中暴露的能力缺口**,不是照搬其他 Agent 的工具集。理由:
+
+- **工具定义占用上下文**:每个工具的 name/description/parameters JSON Schema 都要塞进每次 GLM 请求,工具越多,留给对话历史的 token 越少。
+- **模型选择困难**:工具多了模型容易选错(比如该精细编辑时却整文件覆盖)。Claude Code 在 2.1.117 版本反而**删掉**了 `Glob`/`Grep`(改成 Bash 里跑 `bfs`/`ugrep`),就是在收敛工具数量。
+- **维护成本**:每个工具都有自己的参数解析、错误处理、越界检查、测试覆盖,成本线性增长。
+
+### 参考演进路线(按实际需求触发,不是硬性计划)
+
+| 阶段 | 加什么工具 | 触发条件(你会在使用中抱怨什么) |
+|------|----------|------------------------------|
+| 当前 | `read_file` + `write_file` | —(本 spec 范围) |
+| 下一份 | `grep` / `glob`(搜索) | "Agent 找不到我要改的地方" |
+| 再下一份 | `edit_file`(search-replace) | "改大文件烧 token、等半天" |
+| 之后 | `run_command`(接 `command_risk.rs`) | "Agent 改完不知道对不对"(想跑 `cargo check`/`tsc`) |
+| 再之后 | `list_dir` / 结构索引 | "Agent 不了解工作区结构" |
+| 远期 | `task` / sub-agent | "复杂任务拆不开" |
+
+**每个工具都是独立的一份 spec → plan → 实现**,不一口气全做。
+
+### write_file → edit_file 的升级节点
+
+本版 `write_file` 是**整文件覆盖**:简单可靠,但改大文件时模型要吐整个文件回来,烧 token。
+
+参考 Aider 的[编辑格式研究](https://aider.chat/docs/more/edit-formats.html),成熟方案是 `edit_file`(参数 `old_string` + `new_string`,类似 search-replace):只给变化的片段,省 token。但 `old_string` 要精确匹配,模型容易因空格/换行差异失败。
+
+**升级时机**:Agent 真用起来后,当 token 消耗或大文件编辑延迟成为明显痛点时,加 `edit_file` 作为 `write_file` 的补充(不是替换,两个共存,模型自己选)。这是性价比最高的单工具升级。
+
+### 工具的两种演进维度
+
+不要把"加工具"当成单一动作,要区分:
+
+- **广度(种类)**:从 2 个 → 6-8 个,每个解决一个能力缺口。由"后续计划"清单驱动。
+- **深度(实现)**:单个工具本身演化。比如 `write_file` 未来可能衍生 `edit_file`(search-replace)、`patch_file`(unified diff)等多个变体,Aider 就用了 10+ 种编辑格式匹配不同模型。由 token 效率和准确率驱动。
+
 ## 后续计划(明确不做)
 
 - **Keychain**:把 config.toml 的明文 Key 迁移到 macOS Keychain,激活 `SettingsPanel` 输入框。
