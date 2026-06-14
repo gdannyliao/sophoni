@@ -2,6 +2,7 @@
 
 pub mod agent;
 pub mod command_risk;
+pub mod config;
 pub mod diff;
 pub mod domain;
 pub mod errors;

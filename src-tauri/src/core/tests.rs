@@ -451,3 +451,82 @@ fn mock_agent_marks_existing_readme_as_modified() {
 
     std::fs::remove_dir_all(root).unwrap();
 }
+
+// ── config layer tests ──
+
+use super::domain::AgentConfig;
+
+#[test]
+fn config_returns_not_configured_when_file_missing() {
+    let temp = std::env::temp_dir().join(format!("sophoni-home-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&temp).unwrap();
+    let orig_home = std::env::var("HOME").ok();
+    std::env::set_var("HOME", &temp);
+
+    let result = AgentConfig::load();
+
+    if let Some(h) = orig_home { std::env::set_var("HOME", h); }
+    else { std::env::remove_var("HOME"); }
+    let _ = std::fs::remove_dir_all(&temp);
+
+    assert!(matches!(result, Err(super::errors::AppError::ConfigNotConfigured)));
+}
+
+#[test]
+fn config_loads_api_key_model_base_url() {
+    let temp = std::env::temp_dir().join(format!("sophoni-home-{}", uuid::Uuid::new_v4()));
+    let config_dir = temp.join(".config/sophoni");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        "api_key = \"sk-test\"\nmodel = \"glm-4.6\"\nbase_url = \"https://example.com\"\n",
+    ).unwrap();
+    let orig_home = std::env::var("HOME").ok();
+    std::env::set_var("HOME", &temp);
+
+    let cfg = AgentConfig::load().unwrap();
+
+    if let Some(h) = orig_home { std::env::set_var("HOME", h); }
+    else { std::env::remove_var("HOME"); }
+    let _ = std::fs::remove_dir_all(&temp);
+
+    assert_eq!(cfg.api_key, "sk-test");
+    assert_eq!(cfg.model, "glm-4.6");
+    assert_eq!(cfg.base_url, "https://example.com");
+}
+
+#[test]
+fn config_applies_defaults_for_optional_fields() {
+    let temp = std::env::temp_dir().join(format!("sophoni-home-{}", uuid::Uuid::new_v4()));
+    let config_dir = temp.join(".config/sophoni");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(config_dir.join("config.toml"), "api_key = \"sk-only\"\n").unwrap();
+    let orig_home = std::env::var("HOME").ok();
+    std::env::set_var("HOME", &temp);
+
+    let cfg = AgentConfig::load().unwrap();
+
+    if let Some(h) = orig_home { std::env::set_var("HOME", h); }
+    else { std::env::remove_var("HOME"); }
+    let _ = std::fs::remove_dir_all(&temp);
+
+    assert_eq!(cfg.api_key, "sk-only");
+    assert_eq!(cfg.model, "glm-4.6");
+    assert_eq!(cfg.base_url, "https://open.bigmodel.cn/api/paas/v4");
+}
+
+#[test]
+fn config_status_reports_unconfigured_when_missing() {
+    let temp = std::env::temp_dir().join(format!("sophoni-home-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&temp).unwrap();
+    let orig_home = std::env::var("HOME").ok();
+    std::env::set_var("HOME", &temp);
+
+    let status = AgentConfig::status();
+
+    if let Some(h) = orig_home { std::env::set_var("HOME", h); }
+    else { std::env::remove_var("HOME"); }
+    let _ = std::fs::remove_dir_all(&temp);
+
+    assert!(!status.configured);
+}
