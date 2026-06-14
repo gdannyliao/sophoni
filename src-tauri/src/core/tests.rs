@@ -706,3 +706,130 @@ fn glm_translates_response_without_tool_calls_as_final_answer() {
         _ => panic!("expected FinalAnswer"),
     }
 }
+
+// ── Agent loop tests (L2) ──
+
+use super::agent::{run_agent_task, EventSink};
+use super::domain::{AgentToolSchema, ProviderResponse, SystemPrompt};
+use super::provider::{fake_read_call, fake_write_call, FakeProvider};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+
+struct CollectingSink {
+    events: Mutex<Vec<super::domain::AgentEvent>>,
+}
+
+impl CollectingSink {
+    fn new() -> Self {
+        Self { events: Mutex::new(vec![]) }
+    }
+    fn snapshot(&self) -> Vec<super::domain::AgentEvent> {
+        self.events.lock().unwrap().clone()
+    }
+}
+
+impl EventSink for CollectingSink {
+    fn emit(&self, event: &super::domain::AgentEvent) {
+        self.events.lock().unwrap().push(event.clone());
+    }
+}
+
+fn empty_schemas() -> Vec<AgentToolSchema> { vec![] }
+
+#[tokio::test]
+async fn agent_loop_completes_read_then_write_then_summary() {
+    let root = std::env::temp_dir().join(format!("sophoni-loop-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("README.md"), "old\n").unwrap();
+
+    let provider = FakeProvider::new(vec![
+        ProviderResponse::ToolCalls(vec![fake_read_call("c1", "README.md")]),
+        ProviderResponse::ToolCalls(vec![fake_write_call("c2", "README.md", "new\n")]),
+        ProviderResponse::FinalAnswer("done".into()),
+    ]);
+    let tools = super::tools::ToolDispatcher::new(root.clone());
+    let sink = CollectingSink::new();
+    let cancel = Arc::new(AtomicBool::new(false));
+
+    let result = run_agent_task(
+        Box::new(provider),
+        &tools,
+        &sink,
+        &cancel,
+        SystemPrompt("sys".into()),
+        "update readme".into(),
+        empty_schemas(),
+    ).await.unwrap();
+
+    let emitted = sink.snapshot();
+    std::fs::remove_dir_all(&root).unwrap();
+
+    assert!(emitted.iter().any(|e| e.kind == "summary"));
+    assert_eq!(result.file_changes.len(), 1);
+}
+
+#[tokio::test]
+async fn agent_loop_stops_on_max_rounds() {
+    let root = std::env::temp_dir().join(format!("sophoni-loop-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("f.txt"), "x\n").unwrap();
+
+    let provider = FakeProvider::always(ProviderResponse::ToolCalls(vec![fake_read_call("c", "f.txt")]));
+    let tools = super::tools::ToolDispatcher::new(root.clone());
+    let sink = CollectingSink::new();
+    let cancel = Arc::new(AtomicBool::new(false));
+
+    let _result = run_agent_task(
+        Box::new(provider), &tools, &sink, &cancel,
+        SystemPrompt("s".into()), "t".into(), empty_schemas(),
+    ).await.unwrap();
+
+    let emitted = sink.snapshot();
+    std::fs::remove_dir_all(&root).unwrap();
+
+    assert!(emitted.iter().any(|e| e.kind == "error" && e.body.contains("最大轮次")));
+}
+
+#[tokio::test]
+async fn agent_loop_stops_on_cancel() {
+    let root = std::env::temp_dir().join(format!("sophoni-loop-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("f.txt"), "x\n").unwrap();
+
+    let provider = FakeProvider::always(ProviderResponse::ToolCalls(vec![fake_read_call("c", "f.txt")]));
+    let tools = super::tools::ToolDispatcher::new(root.clone());
+    let sink = CollectingSink::new();
+    let cancel = Arc::new(AtomicBool::new(false));
+    cancel.store(true, Ordering::Relaxed);
+
+    let _result = run_agent_task(
+        Box::new(provider), &tools, &sink, &cancel,
+        SystemPrompt("s".into()), "t".into(), empty_schemas(),
+    ).await.unwrap();
+
+    let emitted = sink.snapshot();
+    std::fs::remove_dir_all(&root).unwrap();
+
+    assert!(emitted.iter().any(|e| e.kind == "error" && e.body.contains("取消")));
+}
+
+#[tokio::test]
+async fn agent_loop_stops_on_provider_error() {
+    let root = std::env::temp_dir().join(format!("sophoni-loop-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+
+    let provider = FakeProvider::always_error("boom");
+    let tools = super::tools::ToolDispatcher::new(root.clone());
+    let sink = CollectingSink::new();
+    let cancel = Arc::new(AtomicBool::new(false));
+
+    let _result = run_agent_task(
+        Box::new(provider), &tools, &sink, &cancel,
+        SystemPrompt("s".into()), "t".into(), empty_schemas(),
+    ).await.unwrap();
+
+    let emitted = sink.snapshot();
+    std::fs::remove_dir_all(&root).unwrap();
+
+    assert!(emitted.iter().any(|e| e.kind == "error" && e.body.contains("Provider")));
+}
