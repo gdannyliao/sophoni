@@ -8,19 +8,24 @@
   let events: AgentEvent[] = [];
   let fileChanges: FileChange[] = [];
   let summary = "输入任务后，Agent 会在这里展示步骤和结果。";
+  let prompt = "";
+  let running = false;
 
-  async function runDemo() {
-    const result = await runMockTaskInBrowser("/tmp/sophoni", "生成基础 README");
-    events = result.events;
-    fileChanges = result.fileChanges;
-    summary = result.summary;
+  async function runDemo(task: string) {
+    running = true;
+    try {
+      const result = await runMockTaskInBrowser("/tmp/sophoni", task || "生成基础 README");
+      events = result.events;
+      fileChanges = result.fileChanges;
+      summary = result.summary;
+    } finally {
+      running = false;
+    }
   }
 </script>
 
 <div class="app-shell">
   <Sidebar />
-  <Conversation {events} {summary} />
+  <Conversation {events} {summary} bind:prompt {running} onRun={runDemo} />
   <ContextPanel {fileChanges} />
 </div>
-
-<button class="floating-run" type="button" on:click={runDemo}>运行 mock 任务</button>

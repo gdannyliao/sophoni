@@ -63,7 +63,6 @@ h2 {
 
 .primary,
 .list-item,
-.floating-run,
 .composer button {
   border: 1px solid #1f6feb;
   background: #1f6feb;
@@ -71,6 +70,12 @@ h2 {
   border-radius: 6px;
   padding: 8px 10px;
   cursor: pointer;
+}
+
+.composer button:disabled {
+  background: #9bb8ee;
+  border-color: #9bb8ee;
+  cursor: default;
 }
 
 .list-item {
@@ -142,10 +147,4 @@ pre {
   white-space: pre-wrap;
   font-size: 12px;
   overflow: auto;
-}
-
-.floating-run {
-  position: fixed;
-  right: 380px;
-  bottom: 28px;
 }

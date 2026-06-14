@@ -3,6 +3,9 @@
 
   export let events: AgentEvent[] = [];
   export let summary = "输入任务后，Agent 会在这里展示步骤和结果。";
+  export let prompt = "";
+  export let running = false;
+  export let onRun: (prompt: string) => void = () => {};
 </script>
 
 <main class="conversation" aria-label="任务会话流">
@@ -27,8 +30,8 @@
     </article>
   </div>
 
-  <form class="composer">
-    <input aria-label="任务输入" placeholder="让 Agent 搜索、修改或解释当前工作区..." />
-    <button type="button">运行 mock 任务</button>
+  <form class="composer" on:submit|preventDefault={() => onRun(prompt)}>
+    <input aria-label="任务输入" placeholder="让 Agent 搜索、修改或解释当前工作区..." bind:value={prompt} />
+    <button type="submit" disabled={running}>{running ? "运行中..." : "运行 mock 任务"}</button>
   </form>
 </main>
