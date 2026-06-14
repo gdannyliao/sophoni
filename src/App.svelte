@@ -1,24 +1,26 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import Sidebar from "./lib/components/Sidebar.svelte";
+  import Conversation from "./lib/components/Conversation.svelte";
+  import ContextPanel from "./lib/components/ContextPanel.svelte";
+  import { runMockTaskInBrowser } from "./lib/mockApi";
+  import type { AgentEvent, FileChange } from "./lib/types";
 
-  let name = $state("");
-  let greetMsg = $state("");
+  let events: AgentEvent[] = [];
+  let fileChanges: FileChange[] = [];
+  let summary = "输入任务后，Agent 会在这里展示步骤和结果。";
 
-  async function greet(event: Event) {
-    event.preventDefault();
-    greetMsg = await invoke<string>("greet", { name });
+  async function runDemo() {
+    const result = await runMockTaskInBrowser("/tmp/sophoni", "生成基础 README");
+    events = result.events;
+    fileChanges = result.fileChanges;
+    summary = result.summary;
   }
 </script>
 
-<main class="container">
-  <h1>Welcome to Tauri + Svelte</h1>
+<div class="app-shell">
+  <Sidebar />
+  <Conversation {events} {summary} />
+  <ContextPanel {fileChanges} />
+</div>
 
-  <form class="row" onsubmit={greet}>
-    <input id="greet-input" placeholder="Enter a name..." bind:value={name} />
-    <button type="submit">Greet</button>
-  </form>
-
-  {#if greetMsg}
-    <p>{greetMsg}</p>
-  {/if}
-</main>
+<button class="floating-run" type="button" on:click={runDemo}>运行 mock 任务</button>

@@ -1,7 +1,13 @@
+import { render, screen } from "@testing-library/svelte";
+import { describe, expect, it } from "vitest";
 import App from "./App.svelte";
 
 describe("App", () => {
-  it("loads the scaffold component", () => {
-    expect(App).toBeDefined();
+  it("renders the three-column desktop workbench", () => {
+    render(App);
+
+    expect(screen.getByRole("complementary", { name: "工作区与会话" })).toBeInTheDocument();
+    expect(screen.getByRole("main", { name: "任务会话流" })).toBeInTheDocument();
+    expect(screen.getByRole("complementary", { name: "上下文与产物" })).toBeInTheDocument();
   });
 });

@@ -7,6 +7,11 @@ export default defineConfig({
   server: {
     strictPort: true,
   },
+  resolve: {
+    // Svelte 5 ships separate client/server entries; vitest + jsdom must resolve
+    // the client (browser) build so component `mount` works in tests.
+    conditions: ["browser"],
+  },
   envPrefix: ["VITE_", "TAURI_"],
   test: {
     environment: "jsdom",
