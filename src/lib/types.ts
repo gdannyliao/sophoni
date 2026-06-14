@@ -20,3 +20,8 @@ export interface AgentTaskResult {
   events: AgentEvent[];
   fileChanges: FileChange[];
 }
+
+export interface ConfigStatus {
+  configured: boolean;
+  model: string;
+}
