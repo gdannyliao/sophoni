@@ -1,6 +1,8 @@
 import type { AgentTaskResult } from "./types";
 
-export async function runMockTaskInBrowser(prompt: string): Promise<AgentTaskResult> {
+export async function runMockTaskInBrowser(workspaceRoot: string, prompt: string): Promise<AgentTaskResult> {
+  void workspaceRoot;
+
   return {
     summary: "mock Agent 已完成一次文件写入任务。",
     events: [
