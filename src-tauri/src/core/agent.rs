@@ -18,6 +18,7 @@ pub struct AgentTaskResult {
 pub fn run_mock_agent_task(workspace_root: PathBuf, prompt: &str) -> AppResult<AgentTaskResult> {
     let fs = WorkspaceFs::new(workspace_root.clone());
     let target = workspace_root.join("README.md");
+    let target_existed = target.exists();
     let next_text = format!("# Sophoni\n\nMock task completed for: {}\n", prompt);
     let write = fs.write_text_with_snapshot(&target, &next_text)?;
 
@@ -26,7 +27,11 @@ pub fn run_mock_agent_task(workspace_root: PathBuf, prompt: &str) -> AppResult<A
         id: Uuid::new_v4(),
         task_run_id: task_id,
         path: "README.md".to_string(),
-        kind: ChangeKind::Modified,
+        kind: if target_existed {
+            ChangeKind::Modified
+        } else {
+            ChangeKind::Created
+        },
         diff: write.diff,
         created_at: Utc::now(),
     };

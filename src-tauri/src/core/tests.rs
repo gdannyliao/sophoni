@@ -1,5 +1,5 @@
 use super::command_risk::{classify_command, CommandRisk};
-use super::domain::{TaskStatus, ToolKind};
+use super::domain::{ChangeKind, TaskStatus, ToolKind};
 use super::storage::Storage;
 use chrono::Utc;
 use rusqlite::params;
@@ -418,13 +418,36 @@ fn diff_separates_non_newline_terminated_changes() {
 fn mock_agent_returns_events_and_file_change() {
     let root = std::env::temp_dir().join(format!("sophoni-agent-test-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&root).unwrap();
+    let expected = "# Sophoni\n\nMock task completed for: 更新 README\n";
 
     let result = run_mock_agent_task(root.clone(), "更新 README").unwrap();
 
     assert!(result.summary.contains("mock Agent"));
     assert!(result.events.iter().any(|event| event.kind == "tool"));
     assert_eq!(result.file_changes.len(), 1);
-    assert!(result.file_changes[0].diff.contains("+# Sophoni"));
+    let change = &result.file_changes[0];
+    assert_eq!(change.path, "README.md");
+    assert_eq!(change.kind, ChangeKind::Created);
+    assert!(change.diff.contains("+# Sophoni"));
+    assert_eq!(
+        std::fs::read_to_string(root.join("README.md")).unwrap(),
+        expected
+    );
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn mock_agent_marks_existing_readme_as_modified() {
+    let root = std::env::temp_dir().join(format!("sophoni-agent-test-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("README.md"), "old readme\n").unwrap();
+
+    let result = run_mock_agent_task(root.clone(), "更新 README").unwrap();
+
+    assert_eq!(result.file_changes.len(), 1);
+    assert_eq!(result.file_changes[0].path, "README.md");
+    assert_eq!(result.file_changes[0].kind, ChangeKind::Modified);
 
     std::fs::remove_dir_all(root).unwrap();
 }
