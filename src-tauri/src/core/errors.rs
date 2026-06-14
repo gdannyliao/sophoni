@@ -16,6 +16,14 @@ pub enum AppError {
     ChronoParse(#[from] chrono::ParseError),
     #[error("serialization error: {0}")]
     Serde(#[from] serde_json::Error),
+    #[error("provider error: {0}")]
+    Provider(String),
+    #[error("config error: {0}")]
+    Config(String),
+    #[error("not configured: GLM API key is missing in ~/.config/sophoni/config.toml")]
+    ConfigNotConfigured,
+    #[error("tool error: {0}")]
+    Tool(String),
     #[error("{0}")]
     Message(String),
 }

@@ -451,3 +451,385 @@ fn mock_agent_marks_existing_readme_as_modified() {
 
     std::fs::remove_dir_all(root).unwrap();
 }
+
+// ── config layer tests ──
+
+use super::domain::AgentConfig;
+
+#[test]
+fn config_returns_not_configured_when_file_missing() {
+    let temp = std::env::temp_dir().join(format!("sophoni-home-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&temp).unwrap();
+    let orig_home = std::env::var("HOME").ok();
+    std::env::set_var("HOME", &temp);
+
+    let result = AgentConfig::load();
+
+    if let Some(h) = orig_home { std::env::set_var("HOME", h); }
+    else { std::env::remove_var("HOME"); }
+    let _ = std::fs::remove_dir_all(&temp);
+
+    assert!(matches!(result, Err(super::errors::AppError::ConfigNotConfigured)));
+}
+
+#[test]
+fn config_loads_api_key_model_base_url() {
+    let temp = std::env::temp_dir().join(format!("sophoni-home-{}", uuid::Uuid::new_v4()));
+    let config_dir = temp.join(".config/sophoni");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        "api_key = \"sk-test\"\nmodel = \"glm-4.6\"\nbase_url = \"https://example.com\"\n",
+    ).unwrap();
+    let orig_home = std::env::var("HOME").ok();
+    std::env::set_var("HOME", &temp);
+
+    let cfg = AgentConfig::load().unwrap();
+
+    if let Some(h) = orig_home { std::env::set_var("HOME", h); }
+    else { std::env::remove_var("HOME"); }
+    let _ = std::fs::remove_dir_all(&temp);
+
+    assert_eq!(cfg.api_key, "sk-test");
+    assert_eq!(cfg.model, "glm-4.6");
+    assert_eq!(cfg.base_url, "https://example.com");
+}
+
+#[test]
+fn config_applies_defaults_for_optional_fields() {
+    let temp = std::env::temp_dir().join(format!("sophoni-home-{}", uuid::Uuid::new_v4()));
+    let config_dir = temp.join(".config/sophoni");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(config_dir.join("config.toml"), "api_key = \"sk-only\"\n").unwrap();
+    let orig_home = std::env::var("HOME").ok();
+    std::env::set_var("HOME", &temp);
+
+    let cfg = AgentConfig::load().unwrap();
+
+    if let Some(h) = orig_home { std::env::set_var("HOME", h); }
+    else { std::env::remove_var("HOME"); }
+    let _ = std::fs::remove_dir_all(&temp);
+
+    assert_eq!(cfg.api_key, "sk-only");
+    assert_eq!(cfg.model, "glm-4.6");
+    assert_eq!(cfg.base_url, "https://open.bigmodel.cn/api/paas/v4");
+}
+
+#[test]
+fn config_status_reports_unconfigured_when_missing() {
+    let temp = std::env::temp_dir().join(format!("sophoni-home-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&temp).unwrap();
+    let orig_home = std::env::var("HOME").ok();
+    std::env::set_var("HOME", &temp);
+
+    let status = AgentConfig::status();
+
+    if let Some(h) = orig_home { std::env::set_var("HOME", h); }
+    else { std::env::remove_var("HOME"); }
+    let _ = std::fs::remove_dir_all(&temp);
+
+    assert!(!status.configured);
+}
+
+// ── tool layer tests (L1) ──
+
+use super::domain::{AgentToolArgs, AgentToolCall, AgentToolName};
+use super::tools::ToolDispatcher;
+
+fn read_call(path: &str) -> AgentToolCall {
+    AgentToolCall {
+        id: "call-1".to_string(),
+        name: AgentToolName::ReadFile,
+        arguments: AgentToolArgs::Read { path: path.to_string() },
+    }
+}
+
+fn write_call(path: &str, content: &str) -> AgentToolCall {
+    AgentToolCall {
+        id: "call-2".to_string(),
+        name: AgentToolName::WriteFile,
+        arguments: AgentToolArgs::Write { path: path.to_string(), content: content.to_string() },
+    }
+}
+
+#[tokio::test]
+async fn tool_read_file_returns_content() {
+    let root = std::env::temp_dir().join(format!("sophoni-tool-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("hello.txt"), "hi there\n").unwrap();
+
+    let tools = ToolDispatcher::new(root.clone());
+    let result = tools.dispatch(&read_call("hello.txt")).await.unwrap();
+
+    std::fs::remove_dir_all(&root).unwrap();
+
+    assert!(!result.is_error);
+    assert_eq!(result.content, "hi there\n");
+    assert!(result.file_change.is_none());
+}
+
+#[tokio::test]
+async fn tool_read_file_outside_root_is_error() {
+    let root = std::env::temp_dir().join(format!("sophoni-tool-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+
+    let tools = ToolDispatcher::new(root.clone());
+    let result = tools.dispatch(&read_call("../outside.txt")).await.unwrap();
+
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(result.is_error);
+}
+
+#[tokio::test]
+async fn tool_read_nonexistent_returns_error_result_not_panic() {
+    let root = std::env::temp_dir().join(format!("sophoni-tool-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+
+    let tools = ToolDispatcher::new(root.clone());
+    let result = tools.dispatch(&read_call("nope.txt")).await.unwrap();
+
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(result.is_error);
+}
+
+#[tokio::test]
+async fn tool_write_file_creates_and_returns_file_change() {
+    let root = std::env::temp_dir().join(format!("sophoni-tool-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+
+    let tools = ToolDispatcher::new(root.clone());
+    let result = tools.dispatch(&write_call("out.txt", "new content\n")).await.unwrap();
+
+    let written = std::fs::read_to_string(root.join("out.txt")).unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+
+    assert!(!result.is_error);
+    assert_eq!(written, "new content\n");
+    let change = result.file_change.expect("write should produce file_change");
+    assert_eq!(change.path, "out.txt");
+    assert!(change.diff.contains("+new content"));
+}
+
+#[tokio::test]
+async fn tool_write_outside_root_is_error() {
+    let root = std::env::temp_dir().join(format!("sophoni-tool-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+
+    let tools = ToolDispatcher::new(root.clone());
+    let result = tools.dispatch(&write_call("../escape.txt", "x")).await.unwrap();
+
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(result.is_error);
+}
+
+// ── GlmProvider translation tests ──
+
+use super::provider::{
+    GlmChoice, GlmFunction, GlmMessage, GlmProvider, GlmResponse, GlmToolCall,
+};
+
+#[test]
+fn glm_translates_user_turn_to_message() {
+    let turn = super::domain::ConversationTurn::User { content: "hi".into() };
+    let msg = GlmProvider::turn_to_glm_message(&turn);
+    assert_eq!(msg.role, "user");
+    assert_eq!(msg.content.as_deref(), Some("hi"));
+    assert!(msg.tool_calls.is_none());
+    assert!(msg.tool_call_id.is_none());
+}
+
+#[test]
+fn glm_translates_tool_turn_to_message() {
+    let turn = super::domain::ConversationTurn::Tool {
+        tool_call_id: "tc-9".into(),
+        result: super::domain::AgentToolResult {
+            tool_call_id: "tc-9".into(),
+            content: "file body".into(),
+            is_error: false,
+            file_change: None,
+        },
+    };
+    let msg = GlmProvider::turn_to_glm_message(&turn);
+    assert_eq!(msg.role, "tool");
+    assert_eq!(msg.tool_call_id.as_deref(), Some("tc-9"));
+    assert_eq!(msg.content.as_deref(), Some("file body"));
+}
+
+#[test]
+fn glm_translates_response_with_tool_calls() {
+    let resp = GlmResponse {
+        choices: vec![GlmChoice {
+            message: GlmMessage {
+                role: "assistant".into(),
+                content: None,
+                tool_calls: Some(vec![GlmToolCall {
+                    id: "call-1".into(),
+                    kind: "function".into(),
+                    function: GlmFunction {
+                        name: "read_file".into(),
+                        arguments: "{\"path\":\"README.md\"}".into(),
+                    },
+                }]),
+                tool_call_id: None,
+            },
+        }],
+    };
+    let translated = GlmProvider::translate_response(resp).unwrap();
+    match translated {
+        super::domain::ProviderResponse::ToolCalls(calls) => {
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0].id, "call-1");
+            match &calls[0].arguments {
+                super::domain::AgentToolArgs::Read { path } => assert_eq!(path, "README.md"),
+                _ => panic!("expected Read args"),
+            }
+        }
+        _ => panic!("expected ToolCalls"),
+    }
+}
+
+#[test]
+fn glm_translates_response_without_tool_calls_as_final_answer() {
+    let resp = GlmResponse {
+        choices: vec![GlmChoice {
+            message: GlmMessage {
+                role: "assistant".into(),
+                content: Some("all done".into()),
+                tool_calls: None,
+                tool_call_id: None,
+            },
+        }],
+    };
+    let translated = GlmProvider::translate_response(resp).unwrap();
+    match translated {
+        super::domain::ProviderResponse::FinalAnswer(t) => assert_eq!(t, "all done"),
+        _ => panic!("expected FinalAnswer"),
+    }
+}
+
+// ── Agent loop tests (L2) ──
+
+use super::agent::{run_agent_task, EventSink};
+use super::domain::{AgentToolSchema, ProviderResponse, SystemPrompt};
+use super::provider::{fake_read_call, fake_write_call, FakeProvider};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+
+struct CollectingSink {
+    events: Mutex<Vec<super::domain::AgentEvent>>,
+}
+
+impl CollectingSink {
+    fn new() -> Self {
+        Self { events: Mutex::new(vec![]) }
+    }
+    fn snapshot(&self) -> Vec<super::domain::AgentEvent> {
+        self.events.lock().unwrap().clone()
+    }
+}
+
+impl EventSink for CollectingSink {
+    fn emit(&self, event: &super::domain::AgentEvent) {
+        self.events.lock().unwrap().push(event.clone());
+    }
+}
+
+fn empty_schemas() -> Vec<AgentToolSchema> { vec![] }
+
+#[tokio::test]
+async fn agent_loop_completes_read_then_write_then_summary() {
+    let root = std::env::temp_dir().join(format!("sophoni-loop-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("README.md"), "old\n").unwrap();
+
+    let provider = FakeProvider::new(vec![
+        ProviderResponse::ToolCalls(vec![fake_read_call("c1", "README.md")]),
+        ProviderResponse::ToolCalls(vec![fake_write_call("c2", "README.md", "new\n")]),
+        ProviderResponse::FinalAnswer("done".into()),
+    ]);
+    let tools = super::tools::ToolDispatcher::new(root.clone());
+    let sink = CollectingSink::new();
+    let cancel = Arc::new(AtomicBool::new(false));
+
+    let result = run_agent_task(
+        Box::new(provider),
+        &tools,
+        &sink,
+        &cancel,
+        SystemPrompt("sys".into()),
+        "update readme".into(),
+        empty_schemas(),
+    ).await.unwrap();
+
+    let emitted = sink.snapshot();
+    std::fs::remove_dir_all(&root).unwrap();
+
+    assert!(emitted.iter().any(|e| e.kind == "summary"));
+    assert_eq!(result.file_changes.len(), 1);
+}
+
+#[tokio::test]
+async fn agent_loop_stops_on_max_rounds() {
+    let root = std::env::temp_dir().join(format!("sophoni-loop-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("f.txt"), "x\n").unwrap();
+
+    let provider = FakeProvider::always(ProviderResponse::ToolCalls(vec![fake_read_call("c", "f.txt")]));
+    let tools = super::tools::ToolDispatcher::new(root.clone());
+    let sink = CollectingSink::new();
+    let cancel = Arc::new(AtomicBool::new(false));
+
+    let _result = run_agent_task(
+        Box::new(provider), &tools, &sink, &cancel,
+        SystemPrompt("s".into()), "t".into(), empty_schemas(),
+    ).await.unwrap();
+
+    let emitted = sink.snapshot();
+    std::fs::remove_dir_all(&root).unwrap();
+
+    assert!(emitted.iter().any(|e| e.kind == "error" && e.body.contains("最大轮次")));
+}
+
+#[tokio::test]
+async fn agent_loop_stops_on_cancel() {
+    let root = std::env::temp_dir().join(format!("sophoni-loop-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("f.txt"), "x\n").unwrap();
+
+    let provider = FakeProvider::always(ProviderResponse::ToolCalls(vec![fake_read_call("c", "f.txt")]));
+    let tools = super::tools::ToolDispatcher::new(root.clone());
+    let sink = CollectingSink::new();
+    let cancel = Arc::new(AtomicBool::new(false));
+    cancel.store(true, Ordering::Relaxed);
+
+    let _result = run_agent_task(
+        Box::new(provider), &tools, &sink, &cancel,
+        SystemPrompt("s".into()), "t".into(), empty_schemas(),
+    ).await.unwrap();
+
+    let emitted = sink.snapshot();
+    std::fs::remove_dir_all(&root).unwrap();
+
+    assert!(emitted.iter().any(|e| e.kind == "error" && e.body.contains("取消")));
+}
+
+#[tokio::test]
+async fn agent_loop_stops_on_provider_error() {
+    let root = std::env::temp_dir().join(format!("sophoni-loop-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+
+    let provider = FakeProvider::always_error("boom");
+    let tools = super::tools::ToolDispatcher::new(root.clone());
+    let sink = CollectingSink::new();
+    let cancel = Arc::new(AtomicBool::new(false));
+
+    let _result = run_agent_task(
+        Box::new(provider), &tools, &sink, &cancel,
+        SystemPrompt("s".into()), "t".into(), empty_schemas(),
+    ).await.unwrap();
+
+    let emitted = sink.snapshot();
+    std::fs::remove_dir_all(&root).unwrap();
+
+    assert!(emitted.iter().any(|e| e.kind == "error" && e.body.contains("Provider")));
+}

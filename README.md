@@ -31,6 +31,24 @@ pnpm test
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
+## 配置 GLM API Key
+
+Agent 循环通过 GLM API 调用模型。创建 `~/.config/sophoni/config.toml`：
+
+```toml
+api_key = "你的 GLM API Key"
+model = "glm-4.6"                    # 可选，默认 glm-4.6
+base_url = "https://open.bigmodel.cn/api/paas/v4"  # 可选
+```
+
+推荐收紧文件权限：
+
+```bash
+chmod 600 ~/.config/sophoni/config.toml
+```
+
+启动后，设置页会显示「已配置 (model: glm-4.6)」。
+
 ## 当前能力
 
 - 三栏桌面工作台。
@@ -38,11 +56,10 @@ cargo test --manifest-path src-tauri/Cargo.toml
 - SQLite schema 骨架。
 - 工作区文件读写和 diff。
 - 命令风险分类。
-- mock Agent 任务流。
+- GLM Agent 循环（read_file / write_file 工具，支持取消和超时）。
+- 事件流实时推送到前端。
 
 ## 尚未实现
-
-- GLM Provider 真连接入。
 - 真实 Function Calling 工具循环。
 - 高级结构索引。
 - 真实命令执行器。
