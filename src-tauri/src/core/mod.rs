@@ -6,6 +6,7 @@ pub mod config;
 pub mod diff;
 pub mod domain;
 pub mod errors;
+pub mod provider;
 pub mod storage;
 pub mod tools;
 pub mod workspace;
