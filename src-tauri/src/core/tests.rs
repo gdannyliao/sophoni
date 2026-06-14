@@ -621,3 +621,88 @@ async fn tool_write_outside_root_is_error() {
     let _ = std::fs::remove_dir_all(&root);
     assert!(result.is_error);
 }
+
+// ── GlmProvider translation tests ──
+
+use super::provider::{
+    GlmChoice, GlmFunction, GlmMessage, GlmProvider, GlmResponse, GlmToolCall,
+};
+
+#[test]
+fn glm_translates_user_turn_to_message() {
+    let turn = super::domain::ConversationTurn::User { content: "hi".into() };
+    let msg = GlmProvider::turn_to_glm_message(&turn);
+    assert_eq!(msg.role, "user");
+    assert_eq!(msg.content.as_deref(), Some("hi"));
+    assert!(msg.tool_calls.is_none());
+    assert!(msg.tool_call_id.is_none());
+}
+
+#[test]
+fn glm_translates_tool_turn_to_message() {
+    let turn = super::domain::ConversationTurn::Tool {
+        tool_call_id: "tc-9".into(),
+        result: super::domain::AgentToolResult {
+            tool_call_id: "tc-9".into(),
+            content: "file body".into(),
+            is_error: false,
+            file_change: None,
+        },
+    };
+    let msg = GlmProvider::turn_to_glm_message(&turn);
+    assert_eq!(msg.role, "tool");
+    assert_eq!(msg.tool_call_id.as_deref(), Some("tc-9"));
+    assert_eq!(msg.content.as_deref(), Some("file body"));
+}
+
+#[test]
+fn glm_translates_response_with_tool_calls() {
+    let resp = GlmResponse {
+        choices: vec![GlmChoice {
+            message: GlmMessage {
+                role: "assistant".into(),
+                content: None,
+                tool_calls: Some(vec![GlmToolCall {
+                    id: "call-1".into(),
+                    kind: "function".into(),
+                    function: GlmFunction {
+                        name: "read_file".into(),
+                        arguments: "{\"path\":\"README.md\"}".into(),
+                    },
+                }]),
+                tool_call_id: None,
+            },
+        }],
+    };
+    let translated = GlmProvider::translate_response(resp).unwrap();
+    match translated {
+        super::domain::ProviderResponse::ToolCalls(calls) => {
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0].id, "call-1");
+            match &calls[0].arguments {
+                super::domain::AgentToolArgs::Read { path } => assert_eq!(path, "README.md"),
+                _ => panic!("expected Read args"),
+            }
+        }
+        _ => panic!("expected ToolCalls"),
+    }
+}
+
+#[test]
+fn glm_translates_response_without_tool_calls_as_final_answer() {
+    let resp = GlmResponse {
+        choices: vec![GlmChoice {
+            message: GlmMessage {
+                role: "assistant".into(),
+                content: Some("all done".into()),
+                tool_calls: None,
+                tool_call_id: None,
+            },
+        }],
+    };
+    let translated = GlmProvider::translate_response(resp).unwrap();
+    match translated {
+        super::domain::ProviderResponse::FinalAnswer(t) => assert_eq!(t, "all done"),
+        _ => panic!("expected FinalAnswer"),
+    }
+}

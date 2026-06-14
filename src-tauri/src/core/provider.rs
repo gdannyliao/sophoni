@@ -1,7 +1,8 @@
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 
 use super::domain::{
-    AgentToolArgs, AgentToolCall, AgentToolName, AgentToolSchema, ConversationTurn,
+    AgentConfig, AgentToolArgs, AgentToolCall, AgentToolName, AgentToolSchema, ConversationTurn,
     ProviderResponse, SystemPrompt,
 };
 use super::errors::{AppError, AppResult};
@@ -87,4 +88,246 @@ pub fn fake_write_call(id: &str, path: &str, content: &str) -> AgentToolCall {
             content: content.to_string(),
         },
     }
+}
+
+// ── GlmProvider: real GLM API client ──
+
+pub struct GlmProvider {
+    config: AgentConfig,
+    http: reqwest::Client,
+}
+
+impl GlmProvider {
+    pub fn new(config: AgentConfig) -> Self {
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .expect("failed to build reqwest client");
+        Self { config, http }
+    }
+
+    /// Translate a model-agnostic turn into the GLM wire format.
+    pub(crate) fn turn_to_glm_message(turn: &ConversationTurn) -> GlmMessage {
+        match turn {
+            ConversationTurn::User { content } => GlmMessage {
+                role: "user".to_string(),
+                content: Some(content.clone()),
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            ConversationTurn::Assistant { content, tool_calls } => GlmMessage {
+                role: "assistant".to_string(),
+                content: content.clone(),
+                tool_calls: if tool_calls.is_empty() {
+                    None
+                } else {
+                    Some(tool_calls.iter().map(Self::tool_call_to_glm).collect())
+                },
+                tool_call_id: None,
+            },
+            ConversationTurn::Tool { tool_call_id, result } => GlmMessage {
+                role: "tool".to_string(),
+                content: Some(result.content.clone()),
+                tool_calls: None,
+                tool_call_id: Some(tool_call_id.clone()),
+            },
+        }
+    }
+
+    fn tool_call_to_glm(call: &AgentToolCall) -> GlmToolCall {
+        let (name, arguments) = match &call.arguments {
+            AgentToolArgs::Read { path } => ("read_file", serde_json::json!({ "path": path })),
+            AgentToolArgs::Write { path, content } => (
+                "write_file",
+                serde_json::json!({ "path": path, "content": content }),
+            ),
+        };
+        GlmToolCall {
+            id: call.id.clone(),
+            kind: "function".to_string(),
+            function: GlmFunction {
+                name: name.to_string(),
+                arguments: arguments.to_string(),
+            },
+        }
+    }
+
+    fn tool_schema_to_glm(schema: &AgentToolSchema) -> GlmToolDef {
+        GlmToolDef {
+            kind: "function".to_string(),
+            function: GlmToolFunctionDef {
+                name: schema.name.to_string(),
+                description: schema.description.to_string(),
+                parameters: schema.parameters.clone(),
+            },
+        }
+    }
+
+    /// Translate the GLM response DTO into a model-agnostic ProviderResponse.
+    pub(crate) fn translate_response(resp: GlmResponse) -> AppResult<ProviderResponse> {
+        let choice = resp
+            .choices
+            .into_iter()
+            .next()
+            .ok_or_else(|| AppError::Provider("response has no choices".into()))?;
+
+        let tool_calls = choice.message.tool_calls.unwrap_or_default();
+        if tool_calls.is_empty() {
+            let text = choice.message.content.unwrap_or_default();
+            Ok(ProviderResponse::FinalAnswer(text))
+        } else {
+            let calls = tool_calls
+                .into_iter()
+                .map(Self::parse_tool_call)
+                .collect::<AppResult<Vec<_>>>()?;
+            Ok(ProviderResponse::ToolCalls(calls))
+        }
+    }
+
+    fn parse_tool_call(gtc: GlmToolCall) -> AppResult<AgentToolCall> {
+        let name = match gtc.function.name.as_str() {
+            "read_file" => AgentToolName::ReadFile,
+            "write_file" => AgentToolName::WriteFile,
+            other => return Err(AppError::Provider(format!("unknown tool: {other}"))),
+        };
+        let args: serde_json::Value = serde_json::from_str(&gtc.function.arguments)
+            .map_err(|e| AppError::Provider(format!("invalid tool arguments: {e}")))?;
+        let arguments = match name {
+            AgentToolName::ReadFile => {
+                let path = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AppError::Provider("read_file missing path".into()))?
+                    .to_string();
+                AgentToolArgs::Read { path }
+            }
+            AgentToolName::WriteFile => {
+                let path = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AppError::Provider("write_file missing path".into()))?
+                    .to_string();
+                let content = args
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AppError::Provider("write_file missing content".into()))?
+                    .to_string();
+                AgentToolArgs::Write { path, content }
+            }
+        };
+        Ok(AgentToolCall { id: gtc.id, name, arguments })
+    }
+}
+
+#[async_trait]
+impl AgentProvider for GlmProvider {
+    async fn complete(
+        &mut self,
+        system: &SystemPrompt,
+        turns: &[ConversationTurn],
+        tools: &[AgentToolSchema],
+    ) -> AppResult<ProviderResponse> {
+        let mut messages = Vec::with_capacity(turns.len() + 1);
+        messages.push(GlmMessage {
+            role: "system".to_string(),
+            content: Some(system.0.clone()),
+            tool_calls: None,
+            tool_call_id: None,
+        });
+        for turn in turns {
+            messages.push(Self::turn_to_glm_message(turn));
+        }
+
+        let glm_tools: Vec<GlmToolDef> = tools.iter().map(Self::tool_schema_to_glm).collect();
+        let req = GlmRequest {
+            model: self.config.model.clone(),
+            messages,
+            tools: Some(glm_tools),
+            tool_choice: Some("auto".to_string()),
+        };
+
+        let url = format!("{}/chat/completions", self.config.base_url);
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.config.api_key)
+            .json(&req)
+            .send()
+            .await
+            .map_err(|e| AppError::Provider(format!("http error: {e}")))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(AppError::Provider(format!("HTTP {status}: {body}")));
+        }
+
+        let glm_resp: GlmResponse = resp
+            .json()
+            .await
+            .map_err(|e| AppError::Provider(format!("failed to parse response: {e}")))?;
+
+        Self::translate_response(glm_resp)
+    }
+}
+
+// ── GLM wire-format DTOs (private to this module) ──
+
+#[derive(Serialize)]
+struct GlmRequest {
+    model: String,
+    messages: Vec<GlmMessage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<GlmToolDef>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub(crate) struct GlmMessage {
+    pub role: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tool_calls: Option<Vec<GlmToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tool_call_id: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub(crate) struct GlmToolCall {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub function: GlmFunction,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub(crate) struct GlmFunction {
+    pub name: String,
+    pub arguments: String,
+}
+
+#[derive(Serialize)]
+struct GlmToolDef {
+    #[serde(rename = "type")]
+    kind: String,
+    function: GlmToolFunctionDef,
+}
+
+#[derive(Serialize)]
+struct GlmToolFunctionDef {
+    name: String,
+    description: String,
+    parameters: serde_json::Value,
+}
+
+#[derive(Deserialize, Debug)]
+pub(crate) struct GlmResponse {
+    pub choices: Vec<GlmChoice>,
+}
+
+#[derive(Deserialize, Debug)]
+pub(crate) struct GlmChoice {
+    pub message: GlmMessage,
 }
