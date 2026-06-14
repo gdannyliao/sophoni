@@ -18,6 +18,10 @@ pub fn classify_command(command: &str, _workspace_root: &str) -> CommandRisk {
         return CommandRisk::High;
     }
 
+    if has_rg_execution_risk(&normalized) {
+        return CommandRisk::High;
+    }
+
     if normalized.starts_with("rg ") || normalized == "rg" {
         return CommandRisk::Low;
     }
@@ -74,4 +78,9 @@ fn has_shell_structure_risk(normalized: &str) -> bool {
     shell_structure_markers
         .iter()
         .any(|marker| normalized.contains(marker))
+}
+
+fn has_rg_execution_risk(normalized: &str) -> bool {
+    (normalized.starts_with("rg ") || normalized == "rg")
+        && (normalized.contains(" --pre=") || normalized.contains(" --pre "))
 }

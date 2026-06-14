@@ -155,6 +155,18 @@ fn compound_rg_commands_are_high_risk() {
 }
 
 #[test]
+fn rg_preprocessor_commands_are_high_risk() {
+    assert_eq!(
+        classify_command("rg --pre=rm needle src/file.txt", "/tmp/project"),
+        CommandRisk::High
+    );
+    assert_eq!(
+        classify_command("rg --pre rm needle src/file.txt", "/tmp/project"),
+        CommandRisk::High
+    );
+}
+
+#[test]
 fn common_commands_are_low_risk() {
     assert_eq!(classify_command("ls", "/tmp/project"), CommandRisk::Low);
     assert_eq!(classify_command("ls -la", "/tmp/project"), CommandRisk::Low);
