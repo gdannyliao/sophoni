@@ -85,7 +85,37 @@ fn has_rg_execution_risk(normalized: &str) -> bool {
         return false;
     }
 
-    normalized
-        .split_whitespace()
+    shell_words(normalized)
+        .iter()
         .any(|arg| arg == "--pre" || arg.starts_with("--pre="))
+}
+
+fn shell_words(command: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+
+    for character in command.chars() {
+        match quote {
+            Some(active_quote) if character == active_quote => {
+                quote = None;
+            }
+            Some(_) => current.push(character),
+            None if character == '\'' || character == '"' => {
+                quote = Some(character);
+            }
+            None if character.is_whitespace() => {
+                if !current.is_empty() {
+                    words.push(std::mem::take(&mut current));
+                }
+            }
+            None => current.push(character),
+        }
+    }
+
+    if !current.is_empty() {
+        words.push(current);
+    }
+
+    words
 }
