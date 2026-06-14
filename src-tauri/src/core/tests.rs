@@ -293,6 +293,7 @@ fn storage_enables_foreign_keys() {
     assert!(storage.foreign_keys_enabled().unwrap());
 }
 
+use super::agent::run_mock_agent_task;
 use super::diff::unified_diff;
 use super::workspace::WorkspaceFs;
 
@@ -411,4 +412,19 @@ fn diff_separates_non_newline_terminated_changes() {
     assert!(diff.contains("-hello"));
     assert!(diff.contains("+hello world"));
     assert!(diff.contains("-hello\n+hello world"));
+}
+
+#[test]
+fn mock_agent_returns_events_and_file_change() {
+    let root = std::env::temp_dir().join(format!("sophoni-agent-test-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+
+    let result = run_mock_agent_task(root.clone(), "更新 README").unwrap();
+
+    assert!(result.summary.contains("mock Agent"));
+    assert!(result.events.iter().any(|event| event.kind == "tool"));
+    assert_eq!(result.file_changes.len(), 1);
+    assert!(result.file_changes[0].diff.contains("+# Sophoni"));
+
+    std::fs::remove_dir_all(root).unwrap();
 }
