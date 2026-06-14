@@ -6,7 +6,7 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use super::domain::{
-    AgentEvent, AgentToolArgs, AgentToolCall, AgentToolName, AgentToolResult, AgentToolSchema,
+    AgentEvent, AgentToolArgs, AgentToolCall, AgentToolResult, AgentToolSchema,
     ChangeKind, ConversationTurn, FileChange, ProviderResponse, SystemPrompt,
 };
 use super::errors::AppResult;
@@ -30,8 +30,9 @@ const OVERALL_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Abstraction over "where events go". In production this emits via Tauri's
 /// AppHandle; in tests it collects into a buffer. Keeps the loop testable
-/// without a Tauri runtime.
-pub trait EventSink: Send {
+/// without a Tauri runtime. `Sync` is required so `&dyn EventSink` is `Send`
+/// and can cross await points in the async loop.
+pub trait EventSink: Send + Sync {
     fn emit(&self, event: &AgentEvent);
 }
 
