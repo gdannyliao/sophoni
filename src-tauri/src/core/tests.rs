@@ -530,3 +530,94 @@ fn config_status_reports_unconfigured_when_missing() {
 
     assert!(!status.configured);
 }
+
+// ── tool layer tests (L1) ──
+
+use super::domain::{AgentToolArgs, AgentToolCall, AgentToolName};
+use super::tools::ToolDispatcher;
+
+fn read_call(path: &str) -> AgentToolCall {
+    AgentToolCall {
+        id: "call-1".to_string(),
+        name: AgentToolName::ReadFile,
+        arguments: AgentToolArgs::Read { path: path.to_string() },
+    }
+}
+
+fn write_call(path: &str, content: &str) -> AgentToolCall {
+    AgentToolCall {
+        id: "call-2".to_string(),
+        name: AgentToolName::WriteFile,
+        arguments: AgentToolArgs::Write { path: path.to_string(), content: content.to_string() },
+    }
+}
+
+#[tokio::test]
+async fn tool_read_file_returns_content() {
+    let root = std::env::temp_dir().join(format!("sophoni-tool-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("hello.txt"), "hi there\n").unwrap();
+
+    let tools = ToolDispatcher::new(root.clone());
+    let result = tools.dispatch(&read_call("hello.txt")).await.unwrap();
+
+    std::fs::remove_dir_all(&root).unwrap();
+
+    assert!(!result.is_error);
+    assert_eq!(result.content, "hi there\n");
+    assert!(result.file_change.is_none());
+}
+
+#[tokio::test]
+async fn tool_read_file_outside_root_is_error() {
+    let root = std::env::temp_dir().join(format!("sophoni-tool-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+
+    let tools = ToolDispatcher::new(root.clone());
+    let result = tools.dispatch(&read_call("../outside.txt")).await.unwrap();
+
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(result.is_error);
+}
+
+#[tokio::test]
+async fn tool_read_nonexistent_returns_error_result_not_panic() {
+    let root = std::env::temp_dir().join(format!("sophoni-tool-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+
+    let tools = ToolDispatcher::new(root.clone());
+    let result = tools.dispatch(&read_call("nope.txt")).await.unwrap();
+
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(result.is_error);
+}
+
+#[tokio::test]
+async fn tool_write_file_creates_and_returns_file_change() {
+    let root = std::env::temp_dir().join(format!("sophoni-tool-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+
+    let tools = ToolDispatcher::new(root.clone());
+    let result = tools.dispatch(&write_call("out.txt", "new content\n")).await.unwrap();
+
+    let written = std::fs::read_to_string(root.join("out.txt")).unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+
+    assert!(!result.is_error);
+    assert_eq!(written, "new content\n");
+    let change = result.file_change.expect("write should produce file_change");
+    assert_eq!(change.path, "out.txt");
+    assert!(change.diff.contains("+new content"));
+}
+
+#[tokio::test]
+async fn tool_write_outside_root_is_error() {
+    let root = std::env::temp_dir().join(format!("sophoni-tool-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+
+    let tools = ToolDispatcher::new(root.clone());
+    let result = tools.dispatch(&write_call("../escape.txt", "x")).await.unwrap();
+
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(result.is_error);
+}
