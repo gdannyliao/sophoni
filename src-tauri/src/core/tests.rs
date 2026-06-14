@@ -164,6 +164,10 @@ fn rg_preprocessor_commands_are_high_risk() {
         classify_command("rg --pre rm needle src/file.txt", "/tmp/project"),
         CommandRisk::High
     );
+    assert_eq!(
+        classify_command("rg --pre\tsh needle src/file.txt", "/tmp/project"),
+        CommandRisk::High
+    );
 }
 
 #[test]

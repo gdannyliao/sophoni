@@ -81,6 +81,11 @@ fn has_shell_structure_risk(normalized: &str) -> bool {
 }
 
 fn has_rg_execution_risk(normalized: &str) -> bool {
-    (normalized.starts_with("rg ") || normalized == "rg")
-        && (normalized.contains(" --pre=") || normalized.contains(" --pre "))
+    if !(normalized.starts_with("rg ") || normalized == "rg") {
+        return false;
+    }
+
+    normalized
+        .split_whitespace()
+        .any(|arg| arg == "--pre" || arg.starts_with("--pre="))
 }
