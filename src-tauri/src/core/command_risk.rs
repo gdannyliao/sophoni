@@ -22,6 +22,10 @@ pub fn classify_command(command: &str, _workspace_root: &str) -> CommandRisk {
         return CommandRisk::High;
     }
 
+    if has_rg_shell_expansion_risk(&normalized) {
+        return CommandRisk::High;
+    }
+
     if normalized.starts_with("rg ") || normalized == "rg" {
         return CommandRisk::Low;
     }
@@ -88,6 +92,11 @@ fn has_rg_execution_risk(normalized: &str) -> bool {
     shell_words(normalized)
         .iter()
         .any(|arg| arg == "--pre" || arg.starts_with("--pre="))
+}
+
+fn has_rg_shell_expansion_risk(normalized: &str) -> bool {
+    (normalized.starts_with("rg ") || normalized == "rg")
+        && (normalized.contains('\\') || normalized.contains('$'))
 }
 
 fn shell_words(command: &str) -> Vec<String> {
