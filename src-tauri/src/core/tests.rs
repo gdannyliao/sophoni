@@ -2318,3 +2318,62 @@ async fn run_command_empty_rejected() {
     let _ = std::fs::remove_dir_all(&root);
     assert!(result.is_error);
 }
+
+// ── run_command 翻译测试 ──
+
+#[test]
+fn glm_parses_run_command_tool_call() {
+    let resp = super::provider::OpenAIResponse {
+        choices: vec![super::provider::OpenAIChoice {
+            message: super::provider::OpenAIMessage {
+                role: "assistant".into(),
+                content: None,
+                tool_calls: Some(vec![super::provider::OpenAIToolCall {
+                    id: "c1".into(),
+                    kind: "function".into(),
+                    function: super::provider::OpenAIFunction {
+                        name: "run_command".into(),
+                        arguments: r#"{"command":"cargo test"}"#.into(),
+                    },
+                }]),
+                tool_call_id: None,
+            },
+        }],
+    };
+    let translated = super::provider::OpenAICompatibleProvider::translate_response(resp).unwrap();
+    match translated {
+        super::domain::ProviderResponse::ToolCalls(calls) => {
+            assert_eq!(calls.len(), 1);
+            match &calls[0].arguments {
+                super::domain::AgentToolArgs::RunCommand { command } => {
+                    assert_eq!(command, "cargo test");
+                }
+                _ => panic!("expected RunCommand args"),
+            }
+        }
+        _ => panic!("expected ToolCalls"),
+    }
+}
+
+#[test]
+fn glm_parses_run_command_missing_field_is_error() {
+    let resp = super::provider::OpenAIResponse {
+        choices: vec![super::provider::OpenAIChoice {
+            message: super::provider::OpenAIMessage {
+                role: "assistant".into(),
+                content: None,
+                tool_calls: Some(vec![super::provider::OpenAIToolCall {
+                    id: "c2".into(),
+                    kind: "function".into(),
+                    function: super::provider::OpenAIFunction {
+                        name: "run_command".into(),
+                        arguments: r#"{}"#.into(),
+                    },
+                }]),
+                tool_call_id: None,
+            },
+        }],
+    };
+    let result = super::provider::OpenAICompatibleProvider::translate_response(resp);
+    assert!(result.is_err());
+}
