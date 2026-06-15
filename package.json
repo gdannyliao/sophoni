@@ -10,7 +10,8 @@
     "tauri": "tauri",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check": "svelte-check --tsconfig ./tsconfig.json"
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "accept": "tsx scripts/acceptance/accept.ts"
   },
   "license": "MIT",
   "dependencies": {
@@ -18,6 +19,7 @@
     "@tauri-apps/plugin-opener": "^2"
   },
   "devDependencies": {
+    "@playwright/test": "^1.60.0",
     "@sveltejs/adapter-static": "^3.0.6",
     "@sveltejs/kit": "^2.9.0",
     "@sveltejs/vite-plugin-svelte": "^5.0.0",
@@ -27,6 +29,7 @@
     "jsdom": "^29.1.1",
     "svelte": "^5.0.0",
     "svelte-check": "^4.6.0",
+    "tsx": "^4.22.4",
     "typescript": "~5.6.2",
     "vite": "^6.0.3",
     "vitest": "^4.1.8"

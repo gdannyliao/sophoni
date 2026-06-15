@@ -6,6 +6,7 @@ export interface AcceptanceStage {
   durationMs: number;
   summary: string;
   logPath: string;
+  exitCode?: number | null;
 }
 
 export interface BrowserCheck {
