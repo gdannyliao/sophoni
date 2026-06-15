@@ -35,6 +35,7 @@
 | 8 | 结果格式 | **人类可读文本**,模仿 `grep -n` 输出(`path:line:content`),不用 JSON |
 | 9 | 安全防护 | 三层:路径词法校验 + 不跟随 symlink(walkdir 默认)+ 深度上限 10 |
 | 10 | 测试 | 真临时目录(与 foundation 一致)+ 16 个 L1 用例 + 2 个翻译用例,不加 L2 |
+| 11 | SYSTEM_PROMPT | 更新常量,列出全部 4 个工具 + 引导"先搜再改"工作流,仍硬编码不可配 |
 
 ## 架构
 
@@ -354,7 +355,33 @@ fn tool_schemas() -> Vec<AgentToolSchema> {
 }
 ```
 
-### 依赖(Cargo.toml)
+### SYSTEM_PROMPT 更新(agent.rs)
+
+现有 system prompt 只提了 `read_file/write_file`,GLM 不知道自己能搜索,也不会被引导"先搜再改"。更新 `SYSTEM_PROMPT` 常量:
+
+```rust
+const SYSTEM_PROMPT: &str = "你是桌面工作区 Agent。只能操作工作区内文件。
+
+可用工具：
+- list_files：列出目录内容，了解工作区结构。不确定文件在哪时，先用它探索。
+- grep：按正则搜索文件内容。找某个函数/变量/字符串用在哪时用它。
+- read_file：读取指定文件内容。
+- write_file：写入文件（整文件覆盖）。
+
+工作方式：
+1. 不确定路径时，先 list_files 或 grep 探索，不要瞎猜路径。
+2. 改文件前，先用 read_file 看当前内容。
+3. 不要在回复里直接给文件内容，通过工具操作。
+4. 完成任务后给出简短总结。";
+```
+
+**关键变化**:
+
+1. **列出所有工具**:让 GLM 知道自己有 `list_files`/`grep`/`read_file`/`write_file` 四个能力。
+2. **明确探索优先**:引导 GLM "不确定路径时先搜",避免瞎猜路径或直接拒绝。
+3. **"改前先读"工作流**:引导 GLM 形成 `grep/list → read → write` 的自然顺序,减少 write_file 写出离谱内容。
+
+仍然硬编码在 `agent.rs`(不可配),仅更新常量内容。
 
 新增:
 
