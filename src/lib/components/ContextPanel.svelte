@@ -4,7 +4,7 @@
   export let fileChanges: FileChange[] = [];
 </script>
 
-<aside class="context" aria-label="上下文与产物">
+<aside class="context" aria-label="上下文与产物" data-testid="context-panel">
   <section>
     <h2>文件与变更</h2>
     {#if fileChanges.length === 0}

@@ -1,4 +1,5 @@
 import { relative } from "node:path";
+import { runBrowserAcceptance } from "./browser-check";
 import { createAcceptanceLogger } from "./logger";
 import { buildReport, writeReport } from "./report";
 import { runCommand } from "./run-command";
@@ -23,12 +24,14 @@ async function main(): Promise<void> {
     stages.push(await runCommand(item.name, item.command, item.args, logger));
   }
 
+  const browser = await runBrowserAcceptance({ logger });
+
   const report = buildReport({
     startedAt,
     finishedAt: new Date().toISOString(),
     runDir: logger.runDir,
     stages,
-    browser: null,
+    browser,
   });
   const reportPath = writeReport(logger.runDir, report);
   const relativeReportPath = relative(process.cwd(), reportPath) || reportPath;
