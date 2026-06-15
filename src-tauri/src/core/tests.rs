@@ -2377,3 +2377,76 @@ fn glm_parses_run_command_missing_field_is_error() {
     let result = super::provider::OpenAICompatibleProvider::translate_response(resp);
     assert!(result.is_err());
 }
+
+// ── run_command 端到端（真实 Provider，需联网 + API Key）──
+// 用 `cargo test --manifest-path src-tauri/Cargo.toml -- --ignored run_command_live`
+// 运行。默认 ignore，避免污染常规测试与 CI。
+
+#[tokio::test]
+#[ignore]
+async fn run_command_live_invokes_tool_against_real_provider() {
+    use super::agent::{run_agent_task, EventSink};
+    use super::domain::{AgentConfig, AgentEvent, SystemPrompt};
+
+    let (config, provider_name) = AgentConfig::load().expect("AgentConfig 未配置");
+    eprintln!("使用真实 Provider: {provider_name} / {}", config.model);
+
+    // 临时工作区，初始化为 git 仓库，放一个可见文件。
+    let root = std::env::temp_dir().join(format!("sophoni-live-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("README.md"), "# live\n").unwrap();
+    let _ = std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(&root)
+        .output();
+
+    let provider: Box<dyn super::provider::AgentProvider> =
+        Box::new(super::provider::OpenAICompatibleProvider::new(config));
+    let tools = super::tools::ToolDispatcher::new(root.clone());
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+
+    struct Collector(std::sync::Mutex<Vec<AgentEvent>>);
+    impl EventSink for Collector {
+        fn emit(&self, event: &AgentEvent) {
+            self.0.lock().unwrap().push(event.clone());
+        }
+    }
+    let sink = Collector(std::sync::Mutex::new(Vec::new()));
+
+    let task = "在工作区跑一次 git status，把命令输出原样告诉我。".to_string();
+    let result = run_agent_task(
+        provider,
+        &tools,
+        &sink,
+        &cancel,
+        SystemPrompt(String::new()),
+        task,
+        vec![],
+    )
+    .await
+    .expect("run_agent_task 出错");
+
+    eprintln!("Agent summary: {}", result.summary);
+
+    let events = sink.0.lock().unwrap();
+    eprintln!("收到 {} 个事件", events.len());
+    for ev in events.iter() {
+        eprintln!("  [{}] {}", ev.kind, ev.title);
+    }
+
+    // 核心断言：至少出现一次 run_command 工具调用，且最终至少有一个非 error 的结果。
+    let invoked_run_command = events
+        .iter()
+        .any(|e| e.kind == "tool_call" && e.title.starts_with("run_command:"));
+    let has_non_error_result = events.iter().any(|e| {
+        e.kind == "tool_result" && !e.body.starts_with("失败")
+    });
+
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(invoked_run_command, "Agent 没有调用 run_command 工具");
+    assert!(
+        has_non_error_result,
+        "run_command 没有产生成功结果（可能命令被拒或执行失败）"
+    );
+}
