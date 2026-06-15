@@ -203,20 +203,39 @@ fn summary_event(body: &str) -> AgentEvent {
 }
 
 fn tool_call_event(call: &AgentToolCall) -> AgentEvent {
-    let (label, detail) = match &call.arguments {
-        AgentToolArgs::Read { path } => ("read_file", path.clone()),
-        AgentToolArgs::Write { path, .. } => ("write_file", path.clone()),
+    let (label, detail, body) = match &call.arguments {
+        AgentToolArgs::Read { path } => (
+            "read_file",
+            path.clone(),
+            format!("path: {path}"),
+        ),
+        AgentToolArgs::Write { path, content } => (
+            "write_file",
+            path.clone(),
+            format!("path: {path}\ncontent ({} 行):\n{}", content.lines().count().max(1), content),
+        ),
         AgentToolArgs::ListFiles { path, recursive } => {
-            ("list_files", format!("{} (recursive={})", path.as_deref().unwrap_or("."), recursive))
+            let p = path.as_deref().unwrap_or(".");
+            (
+                "list_files",
+                format!("{p} (recursive={recursive})"),
+                format!("path: {p}\nrecursive: {recursive}"),
+            )
         }
-        AgentToolArgs::Grep { pattern, path, .. } => {
-            ("grep", format!("/{pattern}/ in {}", path.as_deref().unwrap_or(".")))
+        AgentToolArgs::Grep { pattern, path, include } => {
+            let p = path.as_deref().unwrap_or(".");
+            let inc = include.as_deref().unwrap_or("(无)");
+            (
+                "grep",
+                format!("/{pattern}/ in {p}"),
+                format!("pattern: {pattern}\npath: {p}\ninclude: {inc}"),
+            )
         }
     };
     AgentEvent {
         kind: "tool_call".into(),
         title: format!("{label}: {detail}"),
-        body: format!("调用工具 {label}"),
+        body,
     }
 }
 
