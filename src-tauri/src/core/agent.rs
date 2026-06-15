@@ -22,7 +22,19 @@ pub struct AgentTaskResult {
     pub file_changes: Vec<FileChange>,
 }
 
-const SYSTEM_PROMPT: &str = "你是桌面工作区 Agent。只能操作工作区内文件。必须通过提供的工具(read_file/write_file)操作文件,不要在回复里直接给文件内容。完成任务后给出简短总结。";
+const SYSTEM_PROMPT: &str = "你是桌面工作区 Agent。只能操作工作区内文件。
+
+可用工具：
+- list_files：列出目录内容，了解工作区结构。不确定文件在哪时，先用它探索。
+- grep：按正则搜索文件内容。找某个函数/变量/字符串用在哪时用它。
+- read_file：读取指定文件内容。
+- write_file：写入文件（整文件覆盖）。
+
+工作方式：
+1. 不确定路径时，先 list_files 或 grep 探索，不要瞎猜路径。
+2. 改文件前，先用 read_file 看当前内容。
+3. 不要在回复里直接给文件内容，通过工具操作。
+4. 完成任务后给出简短总结。";
 
 const MAX_ROUNDS: usize = 12;
 const PER_ROUND_TIMEOUT: Duration = Duration::from_secs(30);
@@ -155,6 +167,30 @@ fn tool_schemas() -> Vec<AgentToolSchema> {
                 "required": ["path", "content"]
             }),
         },
+        AgentToolSchema {
+            name: "list_files",
+            description: "列出工作区内指定目录的文件和子目录。默认只列直接子项（不递归）。",
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "相对工作区根的目录路径，默认为工作区根" },
+                    "recursive": { "type": "boolean", "description": "是否递归列出子目录，默认 false" }
+                }
+            }),
+        },
+        AgentToolSchema {
+            name: "grep",
+            description: "在工作区内搜索匹配正则表达式的文件内容。返回 path:line:content 格式的结果。",
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "pattern": { "type": "string", "description": "正则表达式" },
+                    "path": { "type": "string", "description": "限定搜索的目录或文件，默认整个工作区" },
+                    "include": { "type": "string", "description": "文件名 glob 过滤，如 *.ts" }
+                },
+                "required": ["pattern"]
+            }),
+        },
     ]
 }
 
@@ -170,8 +206,11 @@ fn tool_call_event(call: &AgentToolCall) -> AgentEvent {
     let (label, detail) = match &call.arguments {
         AgentToolArgs::Read { path } => ("read_file", path.clone()),
         AgentToolArgs::Write { path, .. } => ("write_file", path.clone()),
-        AgentToolArgs::ListFiles { .. } | AgentToolArgs::Grep { .. } => {
-            ("unknown", "(待实现)".to_string())
+        AgentToolArgs::ListFiles { path, recursive } => {
+            ("list_files", format!("{} (recursive={})", path.as_deref().unwrap_or("."), recursive))
+        }
+        AgentToolArgs::Grep { pattern, path, .. } => {
+            ("grep", format!("/{pattern}/ in {}", path.as_deref().unwrap_or(".")))
         }
     };
     AgentEvent {
