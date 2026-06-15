@@ -36,8 +36,9 @@ const SYSTEM_PROMPT: &str = "你是桌面工作区 Agent。只能操作工作区
 2. 改文件前，先用 read_file 看当前内容。
 3. 小改动优先用 edit_file（给出要替换的原文和新文本），大改动或新建文件用 write_file。
 4. edit_file 的 old_string 必须与文件内容精确匹配（含缩进和空格）。
-5. 不要在回复里直接给文件内容，通过工具操作。
-6. 完成任务后给出简短总结。";
+5. 当用户要求替换「所有」或「全部」时，用 edit_file 的 replace_all=true，一次替换所有匹配，不要分多次单独替换。
+6. 不要在回复里直接给文件内容，通过工具操作。
+7. 完成任务后给出简短总结。";
 
 const MAX_ROUNDS: usize = 12;
 const PER_ROUND_TIMEOUT: Duration = Duration::from_secs(30);
@@ -203,7 +204,7 @@ fn tool_schemas() -> Vec<AgentToolSchema> {
                     "path": { "type": "string", "description": "相对工作区根的文件路径" },
                     "old_string": { "type": "string", "description": "要替换的文本(精确匹配)" },
                     "new_string": { "type": "string", "description": "替换成的文本(必须与 old_string 不同)" },
-                    "replace_all": { "type": "boolean", "description": "是否替换所有匹配,默认 false(用于重命名等)" }
+                    "replace_all": { "type": "boolean", "description": "当 old_string 在文件中出现多次且你想全部替换时设为 true(例如用户要求替换'所有'/'全部'时)。默认 false 时 old_string 必须在文件中唯一。" }
                 },
                 "required": ["path", "old_string", "new_string"]
             }),
