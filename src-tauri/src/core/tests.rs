@@ -833,3 +833,104 @@ async fn agent_loop_stops_on_provider_error() {
 
     assert!(emitted.iter().any(|e| e.kind == "error" && e.body.contains("Provider")));
 }
+
+// ── list_files 工具测试 ──
+
+fn list_call(path: Option<&str>, recursive: bool) -> AgentToolCall {
+    AgentToolCall {
+        id: "call-list".to_string(),
+        name: AgentToolName::ListFiles,
+        arguments: AgentToolArgs::ListFiles {
+            path: path.map(String::from),
+            recursive,
+        },
+    }
+}
+
+#[tokio::test]
+async fn list_files_empty_dir_returns_placeholder() {
+    let root = std::env::temp_dir().join(format!("sophoni-lf-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+
+    let tools = super::tools::ToolDispatcher::new(root.clone());
+    let result = tools.dispatch(&list_call(None, false)).await.unwrap();
+
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(!result.is_error);
+    assert!(result.content.contains("空目录"));
+}
+
+#[tokio::test]
+async fn list_files_lists_files_and_dirs() {
+    let root = std::env::temp_dir().join(format!("sophoni-lf-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(root.join("subdir")).unwrap();
+    std::fs::write(root.join("a.txt"), "a").unwrap();
+    std::fs::write(root.join("b.txt"), "b").unwrap();
+
+    let tools = super::tools::ToolDispatcher::new(root.clone());
+    let result = tools.dispatch(&list_call(None, false)).await.unwrap();
+
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(result.content.contains("a.txt"));
+    assert!(result.content.contains("b.txt"));
+    assert!(result.content.contains("dir"));
+    assert!(result.content.contains("subdir"));
+}
+
+#[tokio::test]
+async fn list_files_recursive_lists_nested() {
+    let root = std::env::temp_dir().join(format!("sophoni-lf-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(root.join("nested/deep")).unwrap();
+    std::fs::write(root.join("nested/deep/file.txt"), "x").unwrap();
+
+    let tools = super::tools::ToolDispatcher::new(root.clone());
+    let result = tools.dispatch(&list_call(None, true)).await.unwrap();
+
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(result.content.contains("file.txt"));
+    assert!(result.content.contains("nested/deep/file.txt"));
+}
+
+#[tokio::test]
+async fn list_files_ignores_node_modules() {
+    let root = std::env::temp_dir().join(format!("sophoni-lf-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+    std::fs::write(root.join("node_modules/pkg/index.js"), "x").unwrap();
+    std::fs::write(root.join("real.txt"), "y").unwrap();
+
+    let tools = super::tools::ToolDispatcher::new(root.clone());
+    let result = tools.dispatch(&list_call(None, true)).await.unwrap();
+
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(!result.content.contains("node_modules"));
+    assert!(result.content.contains("real.txt"));
+}
+
+#[tokio::test]
+async fn list_files_truncates_at_200() {
+    let root = std::env::temp_dir().join(format!("sophoni-lf-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    for i in 0..250 {
+        std::fs::write(root.join(format!("f{i}.txt")), "x").unwrap();
+    }
+
+    let tools = super::tools::ToolDispatcher::new(root.clone());
+    let result = tools.dispatch(&list_call(None, false)).await.unwrap();
+
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(result.content.contains("截断"));
+    let lines: Vec<&str> = result.content.lines().filter(|l| l.contains(".txt")).collect();
+    assert_eq!(lines.len(), 200);
+}
+
+#[tokio::test]
+async fn list_files_outside_root_is_error() {
+    let root = std::env::temp_dir().join(format!("sophoni-lf-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+
+    let tools = super::tools::ToolDispatcher::new(root.clone());
+    let result = tools.dispatch(&list_call(Some("../outside"), false)).await.unwrap();
+
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(result.is_error);
+}
