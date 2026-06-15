@@ -1,10 +1,12 @@
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use chrono::Utc;
 use uuid::Uuid;
 use walkdir::WalkDir;
 
 use super::acceptance::{list_acceptance_runs, read_acceptance_report, read_runtime_log};
+use super::command_risk::{classify_command, shell_words, CommandRisk};
 use super::domain::{
     AgentToolArgs, AgentToolCall, AgentToolName, AgentToolResult, ChangeKind, FileChange,
 };
@@ -96,6 +98,9 @@ impl ToolDispatcher {
             }
             (AgentToolName::ListAcceptanceRuns, AgentToolArgs::ListAcceptanceRuns { limit }) => {
                 self.list_acceptance_runs(&call.id, *limit).await
+            }
+            (AgentToolName::RunCommand, AgentToolArgs::RunCommand { command }) => {
+                self.run_command(&call.id, command).await
             }
             _ => Err(AppError::Tool(
                 "tool name and arguments do not match".into(),
@@ -429,6 +434,53 @@ impl ToolDispatcher {
             Err(e) => Ok(tool_error(call_id, &format!("列出验收运行失败: {e}"))),
         }
     }
+
+    async fn run_command(&self, call_id: &str, command: &str) -> AppResult<AgentToolResult> {
+        let risk = classify_command(command, "");
+        if risk == CommandRisk::High {
+            return Ok(tool_error(
+                call_id,
+                &format!(
+                    "命令被拒绝(高风险): {command}\n只允许安全的只读命令(cargo test/check/build/clippy、git status/diff/log、ls、rg、tsc、pnpm test/build/check 等)。"
+                ),
+            ));
+        }
+
+        let argv = match shell_words(command) {
+            v if v.is_empty() => return Ok(tool_error(call_id, "空命令")),
+            v => v,
+        };
+
+        let root = self.fs.root().to_path_buf();
+        let output = tokio::time::timeout(
+            Duration::from_secs(30),
+            tokio::process::Command::new(&argv[0])
+                .args(&argv[1..])
+                .current_dir(&root)
+                .output(),
+        )
+        .await;
+
+        match output {
+            Ok(Ok(out)) => {
+                let stdout = truncate_output(&String::from_utf8_lossy(&out.stdout), 100, 4000);
+                let stderr = truncate_output(&String::from_utf8_lossy(&out.stderr), 50, 2000);
+                let exit_code = out.status.code().unwrap_or(-1);
+                let content = format!(
+                    "exit code: {exit_code}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+                );
+                let is_error = exit_code != 0;
+                Ok(AgentToolResult {
+                    tool_call_id: call_id.to_string(),
+                    content,
+                    is_error,
+                    file_change: None,
+                })
+            }
+            Ok(Err(e)) => Ok(tool_error(call_id, &format!("执行失败: {e}"))),
+            Err(_) => Ok(tool_error(call_id, "命令超时(30s),已被终止")),
+        }
+    }
 }
 
 fn tool_error(call_id: &str, message: &str) -> AgentToolResult {
@@ -516,5 +568,22 @@ fn normalize_one_quote(c: char) -> char {
         '\u{201C}' | '\u{201D}' => '"',
         '\u{2018}' | '\u{2019}' => '\'',
         other => other,
+    }
+}
+
+fn truncate_output(s: &str, max_lines: usize, max_chars: usize) -> String {
+    let truncated: String = s.chars().take(max_chars).collect();
+    let lines: Vec<&str> = truncated.lines().take(max_lines).collect();
+    let result = lines.join("\n");
+    let total_lines = s.lines().count();
+    let total_chars = s.chars().count();
+    if total_lines > max_lines || total_chars > max_chars {
+        format!(
+            "{result}\n（输出已截断，显示前 {}/{} 行。如需完整输出，请在终端手动运行。）",
+            lines.len(),
+            total_lines
+        )
+    } else {
+        result
     }
 }

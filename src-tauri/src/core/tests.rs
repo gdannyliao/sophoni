@@ -2242,3 +2242,79 @@ fn risk_npm_install_is_high() {
 fn risk_echo_is_high() {
     assert_eq!(classify_command("echo hello", ""), CommandRisk::High);
 }
+
+// ── run_command 工具测试 ──
+
+fn cmd_call(command: &str) -> AgentToolCall {
+    AgentToolCall {
+        id: "call-cmd".to_string(),
+        name: AgentToolName::RunCommand,
+        arguments: AgentToolArgs::RunCommand {
+            command: command.to_string(),
+        },
+    }
+}
+
+#[tokio::test]
+async fn run_command_ls_succeeds() {
+    let root = std::env::temp_dir().join(format!("sophoni-cmd-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("visible.txt"), "x").unwrap();
+
+    let tools = super::tools::ToolDispatcher::new(root.clone());
+    let result = tools.dispatch(&cmd_call("ls")).await.unwrap();
+
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(!result.is_error);
+    assert!(result.content.contains("visible.txt"));
+}
+
+#[tokio::test]
+async fn run_command_ls_nonexistent_is_error_with_exit_code() {
+    let root = std::env::temp_dir().join(format!("sophoni-cmd-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+
+    let tools = super::tools::ToolDispatcher::new(root.clone());
+    let result = tools.dispatch(&cmd_call("ls /nonexistent_dir_xyz")).await.unwrap();
+
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(result.is_error);
+    assert!(result.content.contains("exit code"));
+}
+
+#[tokio::test]
+async fn run_command_high_risk_rejected() {
+    let root = std::env::temp_dir().join(format!("sophoni-cmd-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+
+    let tools = super::tools::ToolDispatcher::new(root.clone());
+    let result = tools.dispatch(&cmd_call("rm -rf /")).await.unwrap();
+
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(result.is_error);
+    assert!(result.content.contains("高风险"));
+}
+
+#[tokio::test]
+async fn run_command_shell_injection_rejected() {
+    let root = std::env::temp_dir().join(format!("sophoni-cmd-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+
+    let tools = super::tools::ToolDispatcher::new(root.clone());
+    let result = tools.dispatch(&cmd_call("cargo test && rm -rf /")).await.unwrap();
+
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(result.is_error);
+}
+
+#[tokio::test]
+async fn run_command_empty_rejected() {
+    let root = std::env::temp_dir().join(format!("sophoni-cmd-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+
+    let tools = super::tools::ToolDispatcher::new(root.clone());
+    let result = tools.dispatch(&cmd_call("   ")).await.unwrap();
+
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(result.is_error);
+}
