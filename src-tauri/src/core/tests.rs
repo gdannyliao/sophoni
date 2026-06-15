@@ -55,6 +55,10 @@ impl TempWorkspace {
         fs::create_dir_all(&run_path).unwrap();
         fs::write(run_path.join(file_name), contents).unwrap();
     }
+
+    fn runs_path(&self) -> PathBuf {
+        self.path.join(".sophoni").join("runs")
+    }
 }
 
 impl Drop for TempWorkspace {
@@ -85,6 +89,25 @@ fn acceptance_lists_runs_newest_first() {
     let runs = list_acceptance_runs(workspace.path(), 1).unwrap();
 
     assert_eq!(runs, vec!["2026-06-15T09-00-00Z"]);
+}
+
+#[test]
+fn acceptance_lists_node_timestamp_runs_newest_first() {
+    let workspace = TempWorkspace::new("acceptance-node-timestamp-list");
+    workspace.write_run_file("20260615-065959", "report.json", "{}");
+    workspace.write_run_file("20260615-070000", "report.json", "{}");
+    workspace.write_run_file("20260615-070000-1", "report.json", "{}");
+
+    let runs = list_acceptance_runs(workspace.path(), 10).unwrap();
+
+    assert_eq!(
+        runs,
+        vec![
+            "20260615-070000-1",
+            "20260615-070000",
+            "20260615-065959"
+        ]
+    );
 }
 
 #[test]
@@ -120,6 +143,48 @@ fn acceptance_reads_named_log_with_line_limit() {
 }
 
 #[test]
+fn acceptance_reads_empty_log_as_empty_string() {
+    let workspace = TempWorkspace::new("acceptance-empty-log");
+    workspace.write_run_file("20260615-070000", "report.json", "{}");
+    workspace.write_run_file("20260615-070000", "runtime.log", "");
+
+    let log = read_runtime_log(workspace.path(), Some("20260615-070000"), "runtime.log", 20)
+        .unwrap();
+
+    assert_eq!(log, "");
+}
+
+#[test]
+fn acceptance_adds_trailing_newline_for_non_empty_log_tail() {
+    let workspace = TempWorkspace::new("acceptance-log-newline");
+    workspace.write_run_file("20260615-070000", "report.json", "{}");
+    workspace.write_run_file("20260615-070000", "runtime.log", "line 1\nline 2");
+
+    let log = read_runtime_log(workspace.path(), Some("20260615-070000"), "runtime.log", 1)
+        .unwrap();
+
+    assert_eq!(log, "line 2\n");
+}
+
+#[test]
+fn acceptance_clamps_log_tail_to_200_lines() {
+    let workspace = TempWorkspace::new("acceptance-log-clamp");
+    workspace.write_run_file("20260615-070000", "report.json", "{}");
+    let content = (1..=250)
+        .map(|line| format!("line {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    workspace.write_run_file("20260615-070000", "runtime.log", &content);
+
+    let log = read_runtime_log(workspace.path(), Some("20260615-070000"), "runtime.log", 500)
+        .unwrap();
+
+    assert_eq!(log.lines().count(), 200);
+    assert!(log.starts_with("line 51\n"));
+    assert!(log.ends_with("line 250\n"));
+}
+
+#[test]
 fn acceptance_rejects_path_traversal_for_logs() {
     let workspace = TempWorkspace::new("acceptance-traversal");
     workspace.write_run_file("2026-06-15T09-00-00Z", "report.json", "{}");
@@ -132,6 +197,36 @@ fn acceptance_rejects_path_traversal_for_logs() {
     );
 
     assert!(result.is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn acceptance_rejects_runs_root_symlink_escape() {
+    use std::os::unix::fs::symlink;
+
+    let workspace = TempWorkspace::new("acceptance-runs-symlink");
+    let outside = TempWorkspace::new("acceptance-runs-symlink-outside");
+    outside.write_run_file("20260615-070000", "report.json", "{\"outside\":true}\n");
+    fs::create_dir_all(workspace.path().join(".sophoni")).unwrap();
+    symlink(outside.runs_path(), workspace.runs_path()).unwrap();
+
+    assert!(list_acceptance_runs(workspace.path(), 10).is_err());
+    assert!(read_acceptance_report(workspace.path(), Some("20260615-070000")).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn acceptance_rejects_run_directory_symlink_escape() {
+    use std::os::unix::fs::symlink;
+
+    let workspace = TempWorkspace::new("acceptance-run-symlink");
+    let outside = TempWorkspace::new("acceptance-run-symlink-outside");
+    outside.write_run_file("20260615-070000", "report.json", "{\"outside\":true}\n");
+    fs::create_dir_all(workspace.runs_path()).unwrap();
+    symlink(outside.run_path("20260615-070000"), workspace.run_path("20260615-070000")).unwrap();
+
+    assert!(read_acceptance_report(workspace.path(), Some("20260615-070000")).is_err());
+    assert!(read_runtime_log(workspace.path(), Some("20260615-070000"), "runtime.log", 20).is_err());
 }
 
 #[test]
