@@ -30,6 +30,7 @@ const SYSTEM_PROMPT: &str = "你是桌面工作区 Agent。只能操作工作区
 - read_file：读取指定文件内容。
 - write_file：写入整个文件（新建或大改时用）。
 - edit_file：精确替换文件中的一段文本（小改时用，比 write_file 省 token）。
+- run_command：执行安全命令（cargo test、cargo check、git status 等），验证代码改动。
 - list_acceptance_runs：列出最近验收运行 ID。
 - read_acceptance_report：读取验收报告 report.json，可不传 run_id 读取最新一次。
 - read_runtime_log：读取验收运行日志的尾部内容，可不传 run_id 读取最新一次。
@@ -40,9 +41,10 @@ const SYSTEM_PROMPT: &str = "你是桌面工作区 Agent。只能操作工作区
 3. 小改动优先用 edit_file（给出要替换的原文和新文本），大改动或新建文件用 write_file。
 4. edit_file 的 old_string 必须与文件内容精确匹配（含缩进和空格）。
 5. 当用户要求替换「所有」或「全部」时，用 edit_file 的 replace_all=true，一次替换所有匹配，不要分多次单独替换。
-6. 验收时优先用 read_acceptance_report 看 report.json，重点检查 ok 和 failureSummary；失败或信息不足时再用 read_runtime_log 查看相关日志。
-7. 不要在回复里直接给文件内容，通过工具操作。
-8. 完成任务后给出简短总结。";
+6. 改完代码后，用 run_command 跑 cargo check 或 cargo test 验证改动是否正确。如果命令失败，读 stderr 定位问题并修正。
+7. 验收时优先用 read_acceptance_report 看 report.json，重点检查 ok 和 failureSummary；失败或信息不足时再用 read_runtime_log 查看相关日志。
+8. 不要在回复里直接给文件内容，通过工具操作。
+9. 完成任务后给出简短总结。";
 
 const MAX_ROUNDS: usize = 12;
 const PER_ROUND_TIMEOUT: Duration = Duration::from_secs(30);
@@ -220,6 +222,17 @@ fn tool_schemas() -> Vec<AgentToolSchema> {
             }),
         },
         AgentToolSchema {
+            name: "run_command",
+            description: "在工作区执行安全命令（测试、编译检查、lint 等）。只允许只读命令：cargo test/check/build/clippy、git status/diff/log、ls、rg、tsc、pnpm test/build/check。命令直接执行，不支持管道、重定向或 shell 特殊字符。",
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "command": { "type": "string", "description": "要执行的命令（如 cargo test）" }
+                },
+                "required": ["command"]
+            }),
+        },
+        AgentToolSchema {
             name: "read_acceptance_report",
             description: "读取验收运行的 report.json。默认读取最新一次验收运行；用于判断 ok 和 failureSummary。",
             parameters: serde_json::json!({
@@ -354,7 +367,9 @@ fn tool_call_event(call: &AgentToolCall) -> AgentEvent {
             format!("limit={limit}"),
             format!("limit: {limit}"),
         ),
-        AgentToolArgs::RunCommand { .. } => ("run_command", "(待实现)".to_string(), String::new()),
+        AgentToolArgs::RunCommand { command } => {
+            ("run_command", command.clone(), format!("command: {command}"))
+        }
     };
     AgentEvent {
         kind: "tool_call".into(),
