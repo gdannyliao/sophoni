@@ -206,3 +206,20 @@ pub struct ConfigStatus {
     pub provider: String,
     pub model: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{TaskStatus, ToolKind};
+
+    #[test]
+    fn task_status_is_serialized_as_snake_case() {
+        let value = serde_json::to_value(TaskStatus::WaitingForRiskDecision).unwrap();
+        assert_eq!(value, "waiting_for_risk_decision");
+    }
+
+    #[test]
+    fn tool_kind_is_serialized_as_snake_case() {
+        let value = serde_json::to_value(ToolKind::FileWrite).unwrap();
+        assert_eq!(value, "file_write");
+    }
+}

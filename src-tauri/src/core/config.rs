@@ -159,3 +159,196 @@ fn tighten_permissions(path: &PathBuf) -> AppResult<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::errors::AppError;
+    use super::AgentConfig;
+    use std::path::Path;
+    use std::sync::{Mutex, OnceLock};
+
+    static HOME_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    struct HomeEnvGuard {
+        original: Option<String>,
+    }
+
+    impl HomeEnvGuard {
+        fn set(home: &Path) -> Self {
+            let original = std::env::var("HOME").ok();
+            std::env::set_var("HOME", home);
+            Self { original }
+        }
+    }
+
+    impl Drop for HomeEnvGuard {
+        fn drop(&mut self) {
+            if let Some(h) = &self.original {
+                std::env::set_var("HOME", h);
+            } else {
+                std::env::remove_var("HOME");
+            }
+        }
+    }
+
+    fn with_home_dir<T>(home: &Path, f: impl FnOnce() -> T) -> T {
+        let _guard = HOME_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _home = HomeEnvGuard::set(home);
+
+        f()
+    }
+
+    #[test]
+    fn config_returns_not_configured_when_file_missing() {
+        let temp = std::env::temp_dir().join(format!("sophoni-home-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp).unwrap();
+
+        let result = with_home_dir(&temp, AgentConfig::load);
+
+        let _ = std::fs::remove_dir_all(&temp);
+
+        assert!(matches!(result, Err(AppError::ConfigNotConfigured)));
+    }
+
+    #[test]
+    fn config_loads_api_key_model_base_url() {
+        let temp = std::env::temp_dir().join(format!("sophoni-home-{}", uuid::Uuid::new_v4()));
+        let config_dir = temp.join(".config/sophoni");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(
+            config_dir.join("config.toml"),
+            "api_key = \"sk-test\"\nmodel = \"glm-4.6\"\nbase_url = \"https://example.com\"\n",
+        )
+        .unwrap();
+
+        let (cfg, provider) = with_home_dir(&temp, || AgentConfig::load().unwrap());
+
+        let _ = std::fs::remove_dir_all(&temp);
+
+        assert_eq!(cfg.api_key, "sk-test");
+        assert_eq!(cfg.model, "glm-4.6");
+        assert_eq!(cfg.base_url, "https://example.com");
+        assert_eq!(provider, "glm");
+    }
+
+    #[test]
+    fn config_applies_defaults_for_optional_fields() {
+        let temp = std::env::temp_dir().join(format!("sophoni-home-{}", uuid::Uuid::new_v4()));
+        let config_dir = temp.join(".config/sophoni");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(config_dir.join("config.toml"), "api_key = \"sk-only\"\n").unwrap();
+
+        let (cfg, provider) = with_home_dir(&temp, || AgentConfig::load().unwrap());
+
+        let _ = std::fs::remove_dir_all(&temp);
+
+        assert_eq!(cfg.api_key, "sk-only");
+        assert_eq!(cfg.model, "glm-4.6");
+        assert_eq!(cfg.base_url, "https://open.bigmodel.cn/api/paas/v4");
+        assert_eq!(provider, "glm");
+    }
+
+    #[test]
+    fn config_status_reports_unconfigured_when_missing() {
+        let temp = std::env::temp_dir().join(format!("sophoni-home-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp).unwrap();
+
+        let status = with_home_dir(&temp, AgentConfig::status);
+
+        let _ = std::fs::remove_dir_all(&temp);
+
+        assert!(!status.configured);
+    }
+
+    #[test]
+    fn config_multi_provider_active_glm() {
+        let temp = std::env::temp_dir().join(format!("sophoni-home-{}", uuid::Uuid::new_v4()));
+        let config_dir = temp.join(".config/sophoni");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(
+            config_dir.join("config.toml"),
+            "active = \"glm\"\n[glm]\napi_key = \"sk-glm\"\n[minimax]\napi_key = \"sk-mm\"\nmodel = \"MiniMax-M3\"\n",
+        ).unwrap();
+        let orig_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", &temp);
+
+        let (cfg, provider) = AgentConfig::load().unwrap();
+
+        if let Some(h) = orig_home { std::env::set_var("HOME", h); }
+        else { std::env::remove_var("HOME"); }
+        let _ = std::fs::remove_dir_all(&temp);
+
+        assert_eq!(provider, "glm");
+        assert_eq!(cfg.api_key, "sk-glm");
+        assert_eq!(cfg.model, "glm-4.6");
+    }
+
+    #[test]
+    fn config_multi_provider_active_minimax() {
+        let temp = std::env::temp_dir().join(format!("sophoni-home-{}", uuid::Uuid::new_v4()));
+        let config_dir = temp.join(".config/sophoni");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(
+            config_dir.join("config.toml"),
+            "active = \"minimax\"\n[glm]\napi_key = \"sk-glm\"\n[minimax]\napi_key = \"sk-mm\"\nmodel = \"MiniMax-M3\"\n",
+        ).unwrap();
+        let orig_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", &temp);
+
+        let (cfg, provider) = AgentConfig::load().unwrap();
+
+        if let Some(h) = orig_home { std::env::set_var("HOME", h); }
+        else { std::env::remove_var("HOME"); }
+        let _ = std::fs::remove_dir_all(&temp);
+
+        assert_eq!(provider, "minimax");
+        assert_eq!(cfg.api_key, "sk-mm");
+        assert_eq!(cfg.model, "MiniMax-M3");
+        assert_eq!(cfg.base_url, "https://api.minimax.io/v1");
+    }
+
+    #[test]
+    fn config_multi_provider_unknown_active_is_error() {
+        let temp = std::env::temp_dir().join(format!("sophoni-home-{}", uuid::Uuid::new_v4()));
+        let config_dir = temp.join(".config/sophoni");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(
+            config_dir.join("config.toml"),
+            "active = \"unknown\"\n[glm]\napi_key = \"sk\"\n",
+        ).unwrap();
+        let orig_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", &temp);
+
+        let result = AgentConfig::load();
+
+        if let Some(h) = orig_home { std::env::set_var("HOME", h); }
+        else { std::env::remove_var("HOME"); }
+        let _ = std::fs::remove_dir_all(&temp);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn config_multi_provider_missing_section_is_error() {
+        let temp = std::env::temp_dir().join(format!("sophoni-home-{}", uuid::Uuid::new_v4()));
+        let config_dir = temp.join(".config/sophoni");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(
+            config_dir.join("config.toml"),
+            "active = \"minimax\"\n[glm]\napi_key = \"sk\"\n",
+        ).unwrap();
+        let orig_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", &temp);
+
+        let result = AgentConfig::load();
+
+        if let Some(h) = orig_home { std::env::set_var("HOME", h); }
+        else { std::env::remove_var("HOME"); }
+        let _ = std::fs::remove_dir_all(&temp);
+
+        assert!(result.is_err());
+    }
+}
