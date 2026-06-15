@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync } from "node:fs";
+import { createServer } from "node:net";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { chromium, type Browser, type Page } from "@playwright/test";
@@ -10,23 +11,91 @@ interface BrowserAcceptanceOptions {
   logger: AcceptanceLogger;
 }
 
+interface ViteServer {
+  child: ChildProcessWithoutNullStreams;
+  port: number;
+  url: string;
+  ready: boolean;
+  stopping: boolean;
+  startupFailure: string | null;
+  output: string[];
+}
+
+interface RunClickObservation {
+  beforeEventCount: number;
+  beforeButtonEnabled: boolean;
+  afterEventCount: number;
+  buttonEnteredRunningState: boolean;
+}
+
 const BROWSER_STAGE = "browser";
-const APP_URL = "http://127.0.0.1:5173";
 const SCREENSHOT_NAME = "browser.png";
 const SERVER_TIMEOUT_MS = 30_000;
+const HOST = "127.0.0.1";
 
 function check(name: string, ok: boolean, summary?: string): BrowserCheck {
   return { name, ok, ...(summary ? { summary } : {}) };
 }
 
-async function waitForServer(url: string, timeoutMs: number): Promise<void> {
+function outputTail(output: string[]): string {
+  return output.join("").trim().split(/\r?\n/).filter(Boolean).slice(-5).join(" | ");
+}
+
+function viteFailureMessage(server: ViteServer, reason: string): string {
+  const tail = outputTail(server.output);
+  return `Vite 启动失败：${reason}${tail ? `；输出：${tail}` : ""}`;
+}
+
+export function createViteStartupFailureCheck(summary: string): BrowserCheck {
+  return check("vite server starts", false, summary);
+}
+
+export function evaluateRunClickObservation(observation: RunClickObservation): BrowserCheck {
+  if (!observation.beforeButtonEnabled) {
+    return check("run click produces observable state change", false, "点击前 run button 不可用");
+  }
+
+  const eventCountIncreased = observation.afterEventCount > observation.beforeEventCount;
+  const ok = eventCountIncreased || observation.buttonEnteredRunningState;
+  return check(
+    "run click produces observable state change",
+    ok,
+    ok
+      ? undefined
+      : `点击前事件数 ${observation.beforeEventCount}，点击后事件数 ${observation.afterEventCount}，按钮未进入 disabled/running 状态`,
+  );
+}
+
+async function getAvailablePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once("error", reject);
+    server.listen(0, HOST, () => {
+      const address = server.address();
+      server.close(() => {
+        if (address && typeof address === "object") {
+          resolve(address.port);
+        } else {
+          reject(new Error("无法分配 Vite 端口"));
+        }
+      });
+    });
+  });
+}
+
+async function waitForServer(server: ViteServer, timeoutMs: number): Promise<void> {
   const startedAt = Date.now();
   let lastError = "";
 
   while (Date.now() - startedAt < timeoutMs) {
+    if (server.startupFailure) {
+      throw new Error(server.startupFailure);
+    }
+
     try {
-      const response = await fetch(url);
+      const response = await fetch(server.url);
       if (response.ok) {
+        server.ready = true;
         return;
       }
       lastError = `HTTP ${response.status}`;
@@ -36,33 +105,72 @@ async function waitForServer(url: string, timeoutMs: number): Promise<void> {
     await delay(300);
   }
 
-  throw new Error(`等待 Vite server 超时：${lastError || url}`);
+  throw new Error(viteFailureMessage(server, `等待 ${server.url} 超时：${lastError || "无响应"}`));
 }
 
-function startVite(logger: AcceptanceLogger): ChildProcessWithoutNullStreams {
-  logger.info(BROWSER_STAGE, "启动 Vite：pnpm dev --host 127.0.0.1");
-  const child = spawn("pnpm", ["dev", "--host", "127.0.0.1"], {
+async function startVite(logger: AcceptanceLogger): Promise<ViteServer> {
+  const port = await getAvailablePort();
+  const url = `http://${HOST}:${port}`;
+  logger.info(BROWSER_STAGE, `启动 Vite：pnpm dev --host ${HOST} --port ${port} --strictPort`);
+  const child = spawn("pnpm", ["dev", "--host", HOST, "--port", String(port), "--strictPort"], {
     cwd: process.cwd(),
     env: process.env,
     stdio: ["ignore", "pipe", "pipe"],
   });
+  const server: ViteServer = {
+    child,
+    port,
+    url,
+    ready: false,
+    stopping: false,
+    startupFailure: null,
+    output: [],
+  };
+
+  function captureOutput(text: string): void {
+    server.output.push(text);
+    if (server.output.length > 20) {
+      server.output.shift();
+    }
+  }
 
   child.stdout.on("data", (chunk: Buffer) => {
-    logger.stdout(chunk.toString());
+    const text = chunk.toString();
+    captureOutput(text);
+    logger.stdout(text);
   });
   child.stderr.on("data", (chunk: Buffer) => {
-    logger.stderr(chunk.toString());
+    const text = chunk.toString();
+    captureOutput(text);
+    logger.stderr(text);
+  });
+  child.on("error", (error) => {
+    if (!server.ready && !server.stopping) {
+      server.startupFailure = viteFailureMessage(server, error.message);
+    }
+  });
+  child.on("exit", (code, signal) => {
+    if (!server.ready && !server.stopping) {
+      server.startupFailure = viteFailureMessage(server, `进程退出 code=${code ?? "null"} signal=${signal ?? "null"}`);
+    }
+  });
+  child.on("close", (code, signal) => {
+    if (!server.ready && !server.stopping) {
+      server.startupFailure = viteFailureMessage(server, `进程退出 code=${code ?? "null"} signal=${signal ?? "null"}`);
+    }
   });
 
-  return child;
+  return server;
 }
 
-async function stopServer(child: ChildProcessWithoutNullStreams, logger: AcceptanceLogger): Promise<void> {
+async function stopServer(server: ViteServer, logger: AcceptanceLogger): Promise<void> {
+  const { child } = server;
   if (child.exitCode !== null || child.signalCode !== null) {
     return;
   }
 
   logger.info(BROWSER_STAGE, "停止 Vite server");
+  server.stopping = true;
   child.kill("SIGTERM");
 
   await new Promise<void>((resolve) => {
@@ -94,12 +202,15 @@ export async function runBrowserAcceptance({ logger }: BrowserAcceptanceOptions)
   const screenshotPath = join(logger.runDir, SCREENSHOT_NAME);
   const consoleErrors: string[] = [];
   const checks: BrowserCheck[] = [];
-  const server = startVite(logger);
+  let appUrl = "";
+  let server: ViteServer | null = null;
   let browser: Browser | null = null;
 
   try {
-    await waitForServer(APP_URL, SERVER_TIMEOUT_MS);
-    logger.info(BROWSER_STAGE, `Vite 可访问：${APP_URL}`);
+    server = await startVite(logger);
+    appUrl = server.url;
+    await waitForServer(server, SERVER_TIMEOUT_MS);
+    logger.info(BROWSER_STAGE, `Vite 可访问：${server.url}`);
 
     browser = await chromium.launch();
     const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
@@ -113,7 +224,7 @@ export async function runBrowserAcceptance({ logger }: BrowserAcceptanceOptions)
       consoleErrors.push(error.message);
     });
 
-    await page.goto(APP_URL, { waitUntil: "networkidle" });
+    await page.goto(server.url, { waitUntil: "networkidle" });
 
     for (const testId of ["app-shell", "sidebar", "conversation", "context-panel"]) {
       checks.push(await hasLocator(page, testId));
@@ -126,22 +237,34 @@ export async function runBrowserAcceptance({ logger }: BrowserAcceptanceOptions)
     checks.push(check("task input accepts text", taskInputOk, taskInputOk ? undefined : `实际值：${taskValue}`));
 
     const runButton = page.getByTestId("run-button");
-    await runButton.click();
-    const stateObserved = await page
-      .waitForFunction(() => {
-        const button = document.querySelector<HTMLButtonElement>('[data-testid="run-button"]');
-        const event = document.querySelector('[data-testid="agent-event"]');
-        return Boolean(button?.disabled || event);
-      }, undefined, { timeout: 3_000 })
-      .then(() => true)
-      .catch(() => false);
+    const beforeEventCount = await page.getByTestId("agent-event").count();
+    const beforeButtonEnabled = await runButton.isEnabled();
+    let buttonEnteredRunningState = false;
+    let afterEventCount = beforeEventCount;
+
+    if (beforeButtonEnabled) {
+      await runButton.click();
+      const observed = await page
+        .waitForFunction((initialEventCount) => {
+          const button = document.querySelector<HTMLButtonElement>('[data-testid="run-button"]');
+          const eventCount = document.querySelectorAll('[data-testid="agent-event"]').length;
+          const running = Boolean(button?.disabled || button?.textContent?.includes("运行中"));
+          return running || eventCount > initialEventCount ? { eventCount, running } : false;
+        }, beforeEventCount, { timeout: 3_000 })
+        .then((handle) => handle.jsonValue() as Promise<{ eventCount: number; running: boolean }>)
+        .catch(() => null);
+
+      buttonEnteredRunningState = Boolean(observed?.running);
+      afterEventCount = observed?.eventCount ?? (await page.getByTestId("agent-event").count());
+    }
 
     checks.push(
-      check(
-        "run click produces observable state",
-        stateObserved,
-        stateObserved ? undefined : "点击后未观察到按钮 disabled/running 状态，也未观察到事件或错误输出",
-      ),
+      evaluateRunClickObservation({
+        beforeEventCount,
+        beforeButtonEnabled,
+        afterEventCount,
+        buttonEnteredRunningState,
+      }),
     );
 
     await page.screenshot({ path: screenshotPath, fullPage: true });
@@ -149,16 +272,22 @@ export async function runBrowserAcceptance({ logger }: BrowserAcceptanceOptions)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.error(BROWSER_STAGE, message);
-    checks.push(check("browser acceptance completed", false, message));
+    checks.push(
+      message.startsWith("Vite 启动失败")
+        ? createViteStartupFailureCheck(message)
+        : check("browser acceptance completed", false, message),
+    );
   } finally {
     if (browser) {
       await browser.close();
     }
-    await stopServer(server, logger);
+    if (server) {
+      await stopServer(server, logger);
+    }
   }
 
   return {
-    url: APP_URL,
+    url: appUrl,
     screenshotPath: SCREENSHOT_NAME,
     consoleErrors,
     checks,
