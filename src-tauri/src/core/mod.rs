@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+pub mod acceptance;
 pub mod agent;
 pub mod command_risk;
 pub mod config;

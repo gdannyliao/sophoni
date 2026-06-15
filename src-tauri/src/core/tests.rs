@@ -1,8 +1,10 @@
+use super::acceptance::{list_acceptance_runs, read_acceptance_report, read_runtime_log};
 use super::command_risk::{classify_command, CommandRisk};
 use super::domain::{ChangeKind, TaskStatus, ToolKind};
 use super::storage::Storage;
 use chrono::Utc;
 use rusqlite::params;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use uuid::Uuid;
@@ -29,6 +31,38 @@ impl Drop for TempDb {
     }
 }
 
+struct TempWorkspace {
+    path: PathBuf,
+}
+
+impl TempWorkspace {
+    fn new(label: &str) -> Self {
+        Self {
+            path: std::env::temp_dir().join(format!("sophoni-{label}-{}", Uuid::new_v4())),
+        }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn run_path(&self, run_id: &str) -> PathBuf {
+        self.path.join(".sophoni").join("runs").join(run_id)
+    }
+
+    fn write_run_file(&self, run_id: &str, file_name: &str, contents: &str) {
+        let run_path = self.run_path(run_id);
+        fs::create_dir_all(&run_path).unwrap();
+        fs::write(run_path.join(file_name), contents).unwrap();
+    }
+}
+
+impl Drop for TempWorkspace {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
 #[test]
 fn task_status_is_serialized_as_snake_case() {
     let value = serde_json::to_value(TaskStatus::WaitingForRiskDecision).unwrap();
@@ -39,6 +73,65 @@ fn task_status_is_serialized_as_snake_case() {
 fn tool_kind_is_serialized_as_snake_case() {
     let value = serde_json::to_value(ToolKind::FileWrite).unwrap();
     assert_eq!(value, "file_write");
+}
+
+#[test]
+fn acceptance_lists_runs_newest_first() {
+    let workspace = TempWorkspace::new("acceptance-list");
+    workspace.write_run_file("2026-06-14T09-00-00Z", "report.json", "{\"ok\":true}");
+    workspace.write_run_file("2026-06-15T09-00-00Z", "report.json", "{\"ok\":true}");
+    workspace.write_run_file("2026-06-13T09-00-00Z", "runtime.log", "ignored\n");
+
+    let runs = list_acceptance_runs(workspace.path(), 1).unwrap();
+
+    assert_eq!(runs, vec!["2026-06-15T09-00-00Z"]);
+}
+
+#[test]
+fn acceptance_reads_latest_report() {
+    let workspace = TempWorkspace::new("acceptance-report");
+    workspace.write_run_file("2026-06-14T09-00-00Z", "report.json", "{\"run\":\"old\"}\n");
+    workspace.write_run_file("2026-06-15T09-00-00Z", "report.json", "{\"run\":\"new\"}\n");
+
+    let report = read_acceptance_report(workspace.path(), None).unwrap();
+
+    assert_eq!(report, "{\"run\":\"new\"}\n");
+}
+
+#[test]
+fn acceptance_reads_named_log_with_line_limit() {
+    let workspace = TempWorkspace::new("acceptance-log");
+    workspace.write_run_file("2026-06-15T09-00-00Z", "report.json", "{}");
+    workspace.write_run_file(
+        "2026-06-15T09-00-00Z",
+        "runtime.log",
+        "line 1\nline 2\nline 3\nline 4\n",
+    );
+
+    let log = read_runtime_log(
+        workspace.path(),
+        Some("2026-06-15T09-00-00Z"),
+        "runtime.log",
+        2,
+    )
+    .unwrap();
+
+    assert_eq!(log, "line 3\nline 4\n");
+}
+
+#[test]
+fn acceptance_rejects_path_traversal_for_logs() {
+    let workspace = TempWorkspace::new("acceptance-traversal");
+    workspace.write_run_file("2026-06-15T09-00-00Z", "report.json", "{}");
+
+    let result = read_runtime_log(
+        workspace.path(),
+        Some("2026-06-15T09-00-00Z"),
+        "../secrets.log",
+        20,
+    );
+
+    assert!(result.is_err());
 }
 
 #[test]
