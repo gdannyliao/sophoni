@@ -1,13 +1,30 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 use uuid::Uuid;
+use walkdir::WalkDir;
 
 use super::domain::{
     AgentToolArgs, AgentToolCall, AgentToolName, AgentToolResult, ChangeKind, FileChange,
 };
 use super::errors::{AppError, AppResult};
-use super::workspace::WorkspaceFs;
+use super::workspace::{lexical_normalize, WorkspaceFs};
+
+const LIST_FILES_MAX: usize = 200;
+const GREP_MAX: usize = 100;
+const MAX_FILE_BYTES: u64 = 1_000_000;
+const MAX_DEPTH: usize = 10;
+
+const IGNORED_DIRS: &[&str] = &[
+    ".git",
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    ".next",
+    ".svelte-kit",
+    "__pycache__",
+];
 
 pub struct ToolDispatcher {
     fs: WorkspaceFs,
@@ -25,6 +42,12 @@ impl ToolDispatcher {
             }
             (AgentToolName::WriteFile, AgentToolArgs::Write { path, content }) => {
                 self.write_file(&call.id, path, content).await
+            }
+            (AgentToolName::ListFiles, AgentToolArgs::ListFiles { path, recursive }) => {
+                self.list_files(&call.id, path.as_deref(), *recursive).await
+            }
+            (AgentToolName::Grep, AgentToolArgs::Grep { pattern, path, include }) => {
+                self.grep(&call.id, pattern, path.as_deref(), include.as_deref()).await
             }
             _ => Err(AppError::Tool("tool name and arguments do not match".into())),
         }
@@ -67,6 +90,152 @@ impl ToolDispatcher {
             file_change: Some(change),
         })
     }
+
+    async fn list_files(
+        &self,
+        call_id: &str,
+        path: Option<&str>,
+        recursive: bool,
+    ) -> AppResult<AgentToolResult> {
+        let root = self.fs.root().to_path_buf();
+        let target = match path {
+            Some(p) => match resolve_within_root(&root, p) {
+                Ok(t) => t,
+                Err(e) => return Ok(tool_error(call_id, &e)),
+            },
+            None => root.clone(),
+        };
+
+        let mut entries = Vec::new();
+        let walker = WalkDir::new(&target)
+            .follow_links(false)
+            .max_depth(if recursive { MAX_DEPTH } else { 1 })
+            .into_iter()
+            .filter_entry(|e| !is_ignored_dir(e));
+
+        for entry in walker {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            if entry.path() == target {
+                continue;
+            }
+            let kind = if entry.file_type().is_dir() { "dir" } else { "file" };
+            let rel = entry.path().strip_prefix(&root).unwrap_or(entry.path());
+            entries.push(format!("{kind}  {}", rel.display()));
+            if entries.len() >= LIST_FILES_MAX {
+                break;
+            }
+        }
+
+        let truncated = entries.len() >= LIST_FILES_MAX;
+        let mut content = entries.join("\n");
+        if content.is_empty() {
+            content = "（空目录）".to_string();
+        }
+        if truncated {
+            content.push_str(&format!("\n（结果已截断，只显示前 {LIST_FILES_MAX} 项）"));
+        }
+
+        Ok(AgentToolResult {
+            tool_call_id: call_id.to_string(),
+            content,
+            is_error: false,
+            file_change: None,
+        })
+    }
+
+    async fn grep(
+        &self,
+        call_id: &str,
+        pattern: &str,
+        path: Option<&str>,
+        include: Option<&str>,
+    ) -> AppResult<AgentToolResult> {
+        let re = match regex::Regex::new(pattern) {
+            Ok(re) => re,
+            Err(e) => return Ok(tool_error(call_id, &format!("正则编译失败: {e}"))),
+        };
+
+        let root = self.fs.root().to_path_buf();
+        let search_root = match path {
+            Some(p) => match resolve_within_root(&root, p) {
+                Ok(t) => t,
+                Err(e) => return Ok(tool_error(call_id, &e)),
+            },
+            None => root.clone(),
+        };
+
+        let include_glob = include.and_then(|g| glob::Pattern::new(g).ok());
+
+        let mut matches = Vec::new();
+        let walker = WalkDir::new(&search_root)
+            .follow_links(false)
+            .max_depth(MAX_DEPTH)
+            .into_iter()
+            .filter_entry(|e| !is_ignored_dir(e));
+
+        for entry in walker {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            if !entry.file_type().is_file() {
+                continue;
+            }
+
+            let too_big = entry
+                .metadata()
+                .map(|m| m.len() > MAX_FILE_BYTES)
+                .unwrap_or(true);
+            if too_big {
+                continue;
+            }
+
+            if let Some(ref g) = include_glob {
+                let fname = entry.file_name().to_string_lossy().to_string();
+                if !g.matches(&fname) {
+                    continue;
+                }
+            }
+
+            let rel = entry.path().strip_prefix(&root).unwrap_or(entry.path());
+            let content = match std::fs::read_to_string(entry.path()) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            for (lineno, line) in content.lines().enumerate() {
+                if re.is_match(line) {
+                    matches.push(format!("{}:{}: {}", rel.display(), lineno + 1, line));
+                    if matches.len() >= GREP_MAX {
+                        break;
+                    }
+                }
+            }
+            if matches.len() >= GREP_MAX {
+                break;
+            }
+        }
+
+        let truncated = matches.len() >= GREP_MAX;
+        let mut output = matches.join("\n");
+        if output.is_empty() {
+            output = "（无匹配）".to_string();
+        }
+        if truncated {
+            output.push_str(&format!(
+                "\n（结果已截断，只显示前 {GREP_MAX} 条匹配。请缩小搜索范围或用更精确的模式）"
+            ));
+        }
+
+        Ok(AgentToolResult {
+            tool_call_id: call_id.to_string(),
+            content: output,
+            is_error: false,
+            file_change: None,
+        })
+    }
 }
 
 fn tool_error(call_id: &str, message: &str) -> AgentToolResult {
@@ -76,4 +245,23 @@ fn tool_error(call_id: &str, message: &str) -> AgentToolResult {
         is_error: true,
         file_change: None,
     }
+}
+
+fn resolve_within_root(root: &Path, relative: &str) -> Result<PathBuf, String> {
+    let joined = root.join(relative);
+    let normalized = lexical_normalize(&joined);
+    if normalized.starts_with(root) {
+        Ok(normalized)
+    } else {
+        Err(format!("路径越界: {relative}"))
+    }
+}
+
+fn is_ignored_dir(entry: &walkdir::DirEntry) -> bool {
+    entry.file_type().is_dir()
+        && entry
+            .file_name()
+            .to_str()
+            .map(|n| IGNORED_DIRS.contains(&n))
+            .unwrap_or(false)
 }

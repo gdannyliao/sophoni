@@ -115,12 +115,16 @@ pub struct SystemPrompt(pub String);
 pub enum AgentToolName {
     ReadFile,
     WriteFile,
+    ListFiles,
+    Grep,
 }
 
 #[derive(Debug, Clone)]
 pub enum AgentToolArgs {
     Read { path: String },
     Write { path: String, content: String },
+    ListFiles { path: Option<String>, recursive: bool },
+    Grep { pattern: String, path: Option<String>, include: Option<String> },
 }
 
 #[derive(Debug, Clone)]

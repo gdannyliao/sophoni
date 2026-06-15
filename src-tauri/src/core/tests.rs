@@ -833,3 +833,350 @@ async fn agent_loop_stops_on_provider_error() {
 
     assert!(emitted.iter().any(|e| e.kind == "error" && e.body.contains("Provider")));
 }
+
+// ── list_files 工具测试 ──
+
+fn list_call(path: Option<&str>, recursive: bool) -> AgentToolCall {
+    AgentToolCall {
+        id: "call-list".to_string(),
+        name: AgentToolName::ListFiles,
+        arguments: AgentToolArgs::ListFiles {
+            path: path.map(String::from),
+            recursive,
+        },
+    }
+}
+
+#[tokio::test]
+async fn list_files_empty_dir_returns_placeholder() {
+    let root = std::env::temp_dir().join(format!("sophoni-lf-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+
+    let tools = super::tools::ToolDispatcher::new(root.clone());
+    let result = tools.dispatch(&list_call(None, false)).await.unwrap();
+
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(!result.is_error);
+    assert!(result.content.contains("空目录"));
+}
+
+#[tokio::test]
+async fn list_files_lists_files_and_dirs() {
+    let root = std::env::temp_dir().join(format!("sophoni-lf-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(root.join("subdir")).unwrap();
+    std::fs::write(root.join("a.txt"), "a").unwrap();
+    std::fs::write(root.join("b.txt"), "b").unwrap();
+
+    let tools = super::tools::ToolDispatcher::new(root.clone());
+    let result = tools.dispatch(&list_call(None, false)).await.unwrap();
+
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(result.content.contains("a.txt"));
+    assert!(result.content.contains("b.txt"));
+    assert!(result.content.contains("dir"));
+    assert!(result.content.contains("subdir"));
+}
+
+#[tokio::test]
+async fn list_files_recursive_lists_nested() {
+    let root = std::env::temp_dir().join(format!("sophoni-lf-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(root.join("nested/deep")).unwrap();
+    std::fs::write(root.join("nested/deep/file.txt"), "x").unwrap();
+
+    let tools = super::tools::ToolDispatcher::new(root.clone());
+    let result = tools.dispatch(&list_call(None, true)).await.unwrap();
+
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(result.content.contains("file.txt"));
+    assert!(result.content.contains("nested/deep/file.txt"));
+}
+
+#[tokio::test]
+async fn list_files_ignores_node_modules() {
+    let root = std::env::temp_dir().join(format!("sophoni-lf-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+    std::fs::write(root.join("node_modules/pkg/index.js"), "x").unwrap();
+    std::fs::write(root.join("real.txt"), "y").unwrap();
+
+    let tools = super::tools::ToolDispatcher::new(root.clone());
+    let result = tools.dispatch(&list_call(None, true)).await.unwrap();
+
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(!result.content.contains("node_modules"));
+    assert!(result.content.contains("real.txt"));
+}
+
+#[tokio::test]
+async fn list_files_truncates_at_200() {
+    let root = std::env::temp_dir().join(format!("sophoni-lf-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    for i in 0..250 {
+        std::fs::write(root.join(format!("f{i}.txt")), "x").unwrap();
+    }
+
+    let tools = super::tools::ToolDispatcher::new(root.clone());
+    let result = tools.dispatch(&list_call(None, false)).await.unwrap();
+
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(result.content.contains("截断"));
+    let lines: Vec<&str> = result.content.lines().filter(|l| l.contains(".txt")).collect();
+    assert_eq!(lines.len(), 200);
+}
+
+#[tokio::test]
+async fn list_files_outside_root_is_error() {
+    let root = std::env::temp_dir().join(format!("sophoni-lf-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+
+    let tools = super::tools::ToolDispatcher::new(root.clone());
+    let result = tools.dispatch(&list_call(Some("../outside"), false)).await.unwrap();
+
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(result.is_error);
+}
+
+// ── grep 工具测试 ──
+
+fn grep_call(pattern: &str, path: Option<&str>, include: Option<&str>) -> AgentToolCall {
+    AgentToolCall {
+        id: "call-grep".to_string(),
+        name: AgentToolName::Grep,
+        arguments: AgentToolArgs::Grep {
+            pattern: pattern.to_string(),
+            path: path.map(String::from),
+            include: include.map(String::from),
+        },
+    }
+}
+
+#[tokio::test]
+async fn grep_finds_matches() {
+    let root = std::env::temp_dir().join(format!("sophoni-gp-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("a.ts"), "const x = invoke(\"foo\");\n").unwrap();
+    std::fs::write(root.join("b.ts"), "no match here\n").unwrap();
+
+    let tools = super::tools::ToolDispatcher::new(root.clone());
+    let result = tools.dispatch(&grep_call("invoke", None, None)).await.unwrap();
+
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(!result.is_error);
+    assert!(result.content.contains("a.ts:1:"));
+    assert!(result.content.contains("invoke"));
+    assert!(!result.content.contains("b.ts"));
+}
+
+#[tokio::test]
+async fn grep_no_match_returns_placeholder() {
+    let root = std::env::temp_dir().join(format!("sophoni-gp-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("a.txt"), "hello\n").unwrap();
+
+    let tools = super::tools::ToolDispatcher::new(root.clone());
+    let result = tools.dispatch(&grep_call("nonexistent", None, None)).await.unwrap();
+
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(!result.is_error);
+    assert!(result.content.contains("无匹配"));
+}
+
+#[tokio::test]
+async fn grep_regex_word_boundary() {
+    let root = std::env::temp_dir().join(format!("sophoni-gp-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("a.txt"), "invoke\nxinvokey\ninvoked\n").unwrap();
+
+    let tools = super::tools::ToolDispatcher::new(root.clone());
+    let result = tools.dispatch(&grep_call(r"\binvoke\b", None, None)).await.unwrap();
+
+    std::fs::remove_dir_all(&root).unwrap();
+    let match_lines: Vec<&str> = result.content.lines().filter(|l| l.contains(":")).collect();
+    assert_eq!(match_lines.len(), 1);
+    assert!(match_lines[0].contains(":1:"));
+}
+
+#[tokio::test]
+async fn grep_ignores_node_modules() {
+    let root = std::env::temp_dir().join(format!("sophoni-gp-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(root.join("node_modules")).unwrap();
+    std::fs::write(root.join("node_modules/lib.js"), "var invoke = 1;\n").unwrap();
+    std::fs::write(root.join("real.ts"), "let invoke = 2;\n").unwrap();
+
+    let tools = super::tools::ToolDispatcher::new(root.clone());
+    let result = tools.dispatch(&grep_call("invoke", None, None)).await.unwrap();
+
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(!result.content.contains("node_modules"));
+    assert!(result.content.contains("real.ts"));
+}
+
+#[tokio::test]
+async fn grep_skips_large_files() {
+    let root = std::env::temp_dir().join(format!("sophoni-gp-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    let big = "invoke ".repeat(200_000);
+    std::fs::write(root.join("big.txt"), &big).unwrap();
+    std::fs::write(root.join("small.txt"), "invoke here\n").unwrap();
+
+    let tools = super::tools::ToolDispatcher::new(root.clone());
+    let result = tools.dispatch(&grep_call("invoke", None, None)).await.unwrap();
+
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(!result.content.contains("big.txt"));
+    assert!(result.content.contains("small.txt"));
+}
+
+#[tokio::test]
+async fn grep_truncates_at_100() {
+    let root = std::env::temp_dir().join(format!("sophoni-gp-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    let content = (0..150).map(|_| "invoke").collect::<Vec<_>>().join("\n");
+    std::fs::write(root.join("many.txt"), &content).unwrap();
+
+    let tools = super::tools::ToolDispatcher::new(root.clone());
+    let result = tools.dispatch(&grep_call("invoke", None, None)).await.unwrap();
+
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(result.content.contains("截断"));
+    let match_lines: Vec<&str> = result.content.lines().filter(|l| l.contains(":")).collect();
+    assert_eq!(match_lines.len(), 100);
+}
+
+#[tokio::test]
+async fn grep_include_glob_filter() {
+    let root = std::env::temp_dir().join(format!("sophoni-gp-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("a.ts"), "invoke\n").unwrap();
+    std::fs::write(root.join("b.js"), "invoke\n").unwrap();
+
+    let tools = super::tools::ToolDispatcher::new(root.clone());
+    let result = tools.dispatch(&grep_call("invoke", None, Some("*.ts"))).await.unwrap();
+
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(result.content.contains("a.ts"));
+    assert!(!result.content.contains("b.js"));
+}
+
+#[tokio::test]
+async fn grep_outside_root_is_error() {
+    let root = std::env::temp_dir().join(format!("sophoni-gp-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+
+    let tools = super::tools::ToolDispatcher::new(root.clone());
+    let result = tools.dispatch(&grep_call("x", Some("../outside"), None)).await.unwrap();
+
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(result.is_error);
+}
+
+// ── 搜索边界测试 ──
+
+#[cfg(unix)]
+#[tokio::test]
+async fn list_files_does_not_follow_symlink_dirs() {
+    use std::os::unix::fs::symlink;
+
+    let root = std::env::temp_dir().join(format!("sophoni-sym-{}", uuid::Uuid::new_v4()));
+    let outside = std::env::temp_dir().join(format!("sophoni-out-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("secret.txt"), "x").unwrap();
+    symlink(&outside, root.join("link")).unwrap();
+
+    let tools = super::tools::ToolDispatcher::new(root.clone());
+    let result = tools.dispatch(&list_call(None, true)).await.unwrap();
+
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&outside);
+    assert!(!result.content.contains("secret.txt"));
+}
+
+#[tokio::test]
+async fn list_files_respects_depth_limit() {
+    let root = std::env::temp_dir().join(format!("sophoni-deep-{}", uuid::Uuid::new_v4()));
+    let mut deep = root.clone();
+    for i in 0..12 {
+        deep = deep.join(format!("d{i}"));
+    }
+    std::fs::create_dir_all(&deep).unwrap();
+    std::fs::write(deep.join("leaf.txt"), "x").unwrap();
+
+    let tools = super::tools::ToolDispatcher::new(root.clone());
+    let result = tools.dispatch(&list_call(None, true)).await.unwrap();
+
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(!result.content.contains("leaf.txt"));
+}
+
+// ── 搜索工具翻译测试 ──
+
+#[test]
+fn glm_parses_list_files_tool_call() {
+    let resp = super::provider::GlmResponse {
+        choices: vec![super::provider::GlmChoice {
+            message: super::provider::GlmMessage {
+                role: "assistant".into(),
+                content: None,
+                tool_calls: Some(vec![super::provider::GlmToolCall {
+                    id: "c1".into(),
+                    kind: "function".into(),
+                    function: super::provider::GlmFunction {
+                        name: "list_files".into(),
+                        arguments: r#"{"path":"src","recursive":true}"#.into(),
+                    },
+                }]),
+                tool_call_id: None,
+            },
+        }],
+    };
+    let translated = super::provider::GlmProvider::translate_response(resp).unwrap();
+    match translated {
+        super::domain::ProviderResponse::ToolCalls(calls) => {
+            assert_eq!(calls.len(), 1);
+            match &calls[0].arguments {
+                super::domain::AgentToolArgs::ListFiles { path, recursive } => {
+                    assert_eq!(path.as_deref(), Some("src"));
+                    assert!(*recursive);
+                }
+                _ => panic!("expected ListFiles args"),
+            }
+        }
+        _ => panic!("expected ToolCalls"),
+    }
+}
+
+#[test]
+fn glm_parses_grep_tool_call() {
+    let resp = super::provider::GlmResponse {
+        choices: vec![super::provider::GlmChoice {
+            message: super::provider::GlmMessage {
+                role: "assistant".into(),
+                content: None,
+                tool_calls: Some(vec![super::provider::GlmToolCall {
+                    id: "c2".into(),
+                    kind: "function".into(),
+                    function: super::provider::GlmFunction {
+                        name: "grep".into(),
+                        arguments: r#"{"pattern":"invoke","include":"*.ts"}"#.into(),
+                    },
+                }]),
+                tool_call_id: None,
+            },
+        }],
+    };
+    let translated = super::provider::GlmProvider::translate_response(resp).unwrap();
+    match translated {
+        super::domain::ProviderResponse::ToolCalls(calls) => {
+            assert_eq!(calls.len(), 1);
+            match &calls[0].arguments {
+                super::domain::AgentToolArgs::Grep { pattern, path, include } => {
+                    assert_eq!(pattern, "invoke");
+                    assert!(path.is_none());
+                    assert_eq!(include.as_deref(), Some("*.ts"));
+                }
+                _ => panic!("expected Grep args"),
+            }
+        }
+        _ => panic!("expected ToolCalls"),
+    }
+}
