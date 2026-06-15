@@ -906,6 +906,24 @@ async fn tool_reads_latest_acceptance_report() {
 }
 
 #[tokio::test]
+async fn tool_truncates_oversized_acceptance_report() {
+    let workspace = TempWorkspace::new("tool-acceptance-report-large");
+    let large_report = format!(r#"{{"ok":true,"failureSummary":null,"body":"{}"}}"#, "x".repeat(70 * 1024));
+    workspace.write_run_file("2026-06-15T09-00-00Z", "report.json", &large_report);
+
+    let tools = ToolDispatcher::new(workspace.path().to_path_buf());
+    let result = tools
+        .dispatch(&read_acceptance_report_call(None))
+        .await
+        .unwrap();
+
+    assert!(!result.is_error);
+    assert!(result.content.len() < large_report.len());
+    assert!(result.content.starts_with(r#"{"ok":true"#));
+    assert!(result.content.contains("内容已截断，只显示前 65536 字节"));
+}
+
+#[tokio::test]
 async fn tool_reads_runtime_log_with_max_lines() {
     let workspace = TempWorkspace::new("tool-runtime-log");
     workspace.write_run_file("2026-06-15T09-00-00Z", "report.json", r#"{"ok":true}"#);
@@ -927,6 +945,28 @@ async fn tool_reads_runtime_log_with_max_lines() {
 
     assert!(!result.is_error);
     assert_eq!(result.content, "line3\nline4\n");
+}
+
+#[tokio::test]
+async fn tool_truncates_oversized_runtime_log_line() {
+    let workspace = TempWorkspace::new("tool-runtime-log-large");
+    workspace.write_run_file("2026-06-15T09-00-00Z", "report.json", r#"{"ok":true}"#);
+    let large_log = format!("{}\n", "x".repeat(40 * 1024));
+    workspace.write_run_file("2026-06-15T09-00-00Z", "runtime.log", &large_log);
+
+    let tools = ToolDispatcher::new(workspace.path().to_path_buf());
+    let result = tools
+        .dispatch(&read_runtime_log_call(
+            Some("2026-06-15T09-00-00Z"),
+            "runtime.log",
+            1,
+        ))
+        .await
+        .unwrap();
+
+    assert!(!result.is_error);
+    assert!(result.content.len() < large_log.len());
+    assert!(result.content.contains("内容已截断，只显示前 32768 字节"));
 }
 
 #[tokio::test]
@@ -1613,6 +1653,37 @@ fn glm_parses_read_runtime_log_tool_call() {
 }
 
 #[test]
+fn glm_parses_read_runtime_log_huge_max_lines_with_safe_clamp() {
+    let resp = super::provider::GlmResponse {
+        choices: vec![super::provider::GlmChoice {
+            message: super::provider::GlmMessage {
+                role: "assistant".into(),
+                content: None,
+                tool_calls: Some(vec![super::provider::GlmToolCall {
+                    id: "c-runtime-huge".into(),
+                    kind: "function".into(),
+                    function: super::provider::GlmFunction {
+                        name: "read_runtime_log".into(),
+                        arguments: r#"{"file_name":"runtime.log","max_lines":18446744073709551615}"#.into(),
+                    },
+                }]),
+                tool_call_id: None,
+            },
+        }],
+    };
+    let translated = super::provider::GlmProvider::translate_response(resp).unwrap();
+    match translated {
+        super::domain::ProviderResponse::ToolCalls(calls) => match &calls[0].arguments {
+            super::domain::AgentToolArgs::ReadRuntimeLog { max_lines, .. } => {
+                assert_eq!(*max_lines, 200);
+            }
+            _ => panic!("expected ReadRuntimeLog args"),
+        },
+        _ => panic!("expected ToolCalls"),
+    }
+}
+
+#[test]
 fn glm_parses_list_acceptance_runs_default_limit() {
     let resp = super::provider::GlmResponse {
         choices: vec![super::provider::GlmChoice {
@@ -1642,6 +1713,37 @@ fn glm_parses_list_acceptance_runs_default_limit() {
                 _ => panic!("expected ListAcceptanceRuns args"),
             }
         }
+        _ => panic!("expected ToolCalls"),
+    }
+}
+
+#[test]
+fn glm_parses_list_acceptance_runs_huge_limit_with_safe_clamp() {
+    let resp = super::provider::GlmResponse {
+        choices: vec![super::provider::GlmChoice {
+            message: super::provider::GlmMessage {
+                role: "assistant".into(),
+                content: None,
+                tool_calls: Some(vec![super::provider::GlmToolCall {
+                    id: "c-list-acceptance-huge".into(),
+                    kind: "function".into(),
+                    function: super::provider::GlmFunction {
+                        name: "list_acceptance_runs".into(),
+                        arguments: r#"{"limit":18446744073709551615}"#.into(),
+                    },
+                }]),
+                tool_call_id: None,
+            },
+        }],
+    };
+    let translated = super::provider::GlmProvider::translate_response(resp).unwrap();
+    match translated {
+        super::domain::ProviderResponse::ToolCalls(calls) => match &calls[0].arguments {
+            super::domain::AgentToolArgs::ListAcceptanceRuns { limit } => {
+                assert_eq!(*limit, 20);
+            }
+            _ => panic!("expected ListAcceptanceRuns args"),
+        },
         _ => panic!("expected ToolCalls"),
     }
 }

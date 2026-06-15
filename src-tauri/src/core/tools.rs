@@ -15,6 +15,8 @@ const LIST_FILES_MAX: usize = 200;
 const GREP_MAX: usize = 100;
 const ACCEPTANCE_RUNS_LIMIT_MIN: usize = 1;
 const ACCEPTANCE_RUNS_LIMIT_MAX: usize = 20;
+const ACCEPTANCE_REPORT_MAX_BYTES: usize = 64 * 1024;
+const ACCEPTANCE_LOG_MAX_BYTES: usize = 32 * 1024;
 const MAX_FILE_BYTES: u64 = 1_000_000;
 const MAX_DEPTH: usize = 10;
 
@@ -381,7 +383,7 @@ impl ToolDispatcher {
         match read_acceptance_report(self.fs.root(), run_id) {
             Ok(content) => Ok(AgentToolResult {
                 tool_call_id: call_id.to_string(),
-                content,
+                content: cap_text_bytes(content, ACCEPTANCE_REPORT_MAX_BYTES),
                 is_error: false,
                 file_change: None,
             }),
@@ -399,7 +401,7 @@ impl ToolDispatcher {
         match read_runtime_log(self.fs.root(), run_id, file_name, max_lines) {
             Ok(content) => Ok(AgentToolResult {
                 tool_call_id: call_id.to_string(),
-                content,
+                content: cap_text_bytes(content, ACCEPTANCE_LOG_MAX_BYTES),
                 is_error: false,
                 file_change: None,
             }),
@@ -436,6 +438,21 @@ fn tool_error(call_id: &str, message: &str) -> AgentToolResult {
         is_error: true,
         file_change: None,
     }
+}
+
+fn cap_text_bytes(content: String, max_bytes: usize) -> String {
+    if content.len() <= max_bytes {
+        return content;
+    }
+
+    let mut end = max_bytes;
+    while !content.is_char_boundary(end) {
+        end -= 1;
+    }
+
+    let mut capped = content[..end].to_string();
+    capped.push_str(&format!("\n（内容已截断，只显示前 {max_bytes} 字节）"));
+    capped
 }
 
 fn resolve_within_root(root: &Path, relative: &str) -> Result<PathBuf, String> {

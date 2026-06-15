@@ -7,6 +7,11 @@ use super::domain::{
 };
 use super::errors::{AppError, AppResult};
 
+const READ_RUNTIME_LOG_DEFAULT_MAX_LINES: usize = 80;
+const READ_RUNTIME_LOG_MAX_LINES: u64 = 200;
+const LIST_ACCEPTANCE_RUNS_DEFAULT_LIMIT: usize = 5;
+const LIST_ACCEPTANCE_RUNS_MAX_LIMIT: u64 = 20;
+
 /// Model-agnostic provider contract. Implementations (GlmProvider, future
 /// OpenAI/Claude providers) translate domain types to/from their wire format.
 #[async_trait]
@@ -354,8 +359,8 @@ impl GlmProvider {
                 let max_lines = args
                     .get("max_lines")
                     .and_then(|v| v.as_u64())
-                    .map(|v| v as usize)
-                    .unwrap_or(80);
+                    .map(|v| v.clamp(1, READ_RUNTIME_LOG_MAX_LINES) as usize)
+                    .unwrap_or(READ_RUNTIME_LOG_DEFAULT_MAX_LINES);
                 AgentToolArgs::ReadRuntimeLog {
                     run_id,
                     file_name,
@@ -366,8 +371,8 @@ impl GlmProvider {
                 let limit = args
                     .get("limit")
                     .and_then(|v| v.as_u64())
-                    .map(|v| v as usize)
-                    .unwrap_or(5);
+                    .map(|v| v.clamp(1, LIST_ACCEPTANCE_RUNS_MAX_LIMIT) as usize)
+                    .unwrap_or(LIST_ACCEPTANCE_RUNS_DEFAULT_LIMIT);
                 AgentToolArgs::ListAcceptanceRuns { limit }
             }
         };
