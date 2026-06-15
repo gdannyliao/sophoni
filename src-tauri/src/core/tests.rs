@@ -484,7 +484,7 @@ fn config_loads_api_key_model_base_url() {
     let orig_home = std::env::var("HOME").ok();
     std::env::set_var("HOME", &temp);
 
-    let cfg = AgentConfig::load().unwrap();
+    let (cfg, provider) = AgentConfig::load().unwrap();
 
     if let Some(h) = orig_home { std::env::set_var("HOME", h); }
     else { std::env::remove_var("HOME"); }
@@ -493,6 +493,7 @@ fn config_loads_api_key_model_base_url() {
     assert_eq!(cfg.api_key, "sk-test");
     assert_eq!(cfg.model, "glm-4.6");
     assert_eq!(cfg.base_url, "https://example.com");
+    assert_eq!(provider, "glm");
 }
 
 #[test]
@@ -504,7 +505,7 @@ fn config_applies_defaults_for_optional_fields() {
     let orig_home = std::env::var("HOME").ok();
     std::env::set_var("HOME", &temp);
 
-    let cfg = AgentConfig::load().unwrap();
+    let (cfg, provider) = AgentConfig::load().unwrap();
 
     if let Some(h) = orig_home { std::env::set_var("HOME", h); }
     else { std::env::remove_var("HOME"); }
@@ -513,6 +514,7 @@ fn config_applies_defaults_for_optional_fields() {
     assert_eq!(cfg.api_key, "sk-only");
     assert_eq!(cfg.model, "glm-4.6");
     assert_eq!(cfg.base_url, "https://open.bigmodel.cn/api/paas/v4");
+    assert_eq!(provider, "glm");
 }
 
 #[test]
@@ -529,6 +531,95 @@ fn config_status_reports_unconfigured_when_missing() {
     let _ = std::fs::remove_dir_all(&temp);
 
     assert!(!status.configured);
+}
+
+#[test]
+fn config_multi_provider_active_glm() {
+    let temp = std::env::temp_dir().join(format!("sophoni-home-{}", uuid::Uuid::new_v4()));
+    let config_dir = temp.join(".config/sophoni");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        "active = \"glm\"\n[glm]\napi_key = \"sk-glm\"\n[minimax]\napi_key = \"sk-mm\"\nmodel = \"MiniMax-M3\"\n",
+    ).unwrap();
+    let orig_home = std::env::var("HOME").ok();
+    std::env::set_var("HOME", &temp);
+
+    let (cfg, provider) = AgentConfig::load().unwrap();
+
+    if let Some(h) = orig_home { std::env::set_var("HOME", h); }
+    else { std::env::remove_var("HOME"); }
+    let _ = std::fs::remove_dir_all(&temp);
+
+    assert_eq!(provider, "glm");
+    assert_eq!(cfg.api_key, "sk-glm");
+    assert_eq!(cfg.model, "glm-4.6");
+}
+
+#[test]
+fn config_multi_provider_active_minimax() {
+    let temp = std::env::temp_dir().join(format!("sophoni-home-{}", uuid::Uuid::new_v4()));
+    let config_dir = temp.join(".config/sophoni");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        "active = \"minimax\"\n[glm]\napi_key = \"sk-glm\"\n[minimax]\napi_key = \"sk-mm\"\nmodel = \"MiniMax-M3\"\n",
+    ).unwrap();
+    let orig_home = std::env::var("HOME").ok();
+    std::env::set_var("HOME", &temp);
+
+    let (cfg, provider) = AgentConfig::load().unwrap();
+
+    if let Some(h) = orig_home { std::env::set_var("HOME", h); }
+    else { std::env::remove_var("HOME"); }
+    let _ = std::fs::remove_dir_all(&temp);
+
+    assert_eq!(provider, "minimax");
+    assert_eq!(cfg.api_key, "sk-mm");
+    assert_eq!(cfg.model, "MiniMax-M3");
+    assert_eq!(cfg.base_url, "https://api.minimax.io/v1");
+}
+
+#[test]
+fn config_multi_provider_unknown_active_is_error() {
+    let temp = std::env::temp_dir().join(format!("sophoni-home-{}", uuid::Uuid::new_v4()));
+    let config_dir = temp.join(".config/sophoni");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        "active = \"unknown\"\n[glm]\napi_key = \"sk\"\n",
+    ).unwrap();
+    let orig_home = std::env::var("HOME").ok();
+    std::env::set_var("HOME", &temp);
+
+    let result = AgentConfig::load();
+
+    if let Some(h) = orig_home { std::env::set_var("HOME", h); }
+    else { std::env::remove_var("HOME"); }
+    let _ = std::fs::remove_dir_all(&temp);
+
+    assert!(result.is_err());
+}
+
+#[test]
+fn config_multi_provider_missing_section_is_error() {
+    let temp = std::env::temp_dir().join(format!("sophoni-home-{}", uuid::Uuid::new_v4()));
+    let config_dir = temp.join(".config/sophoni");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        "active = \"minimax\"\n[glm]\napi_key = \"sk\"\n",
+    ).unwrap();
+    let orig_home = std::env::var("HOME").ok();
+    std::env::set_var("HOME", &temp);
+
+    let result = AgentConfig::load();
+
+    if let Some(h) = orig_home { std::env::set_var("HOME", h); }
+    else { std::env::remove_var("HOME"); }
+    let _ = std::fs::remove_dir_all(&temp);
+
+    assert!(result.is_err());
 }
 
 // ── tool layer tests (L1) ──

@@ -58,7 +58,7 @@ async fn run_agent_task(
 ) -> Result<AgentTaskResult, AppError> {
     state.cancel.store(false, Ordering::Relaxed);
 
-    let config = AgentConfig::load()?;
+    let (config, _provider) = AgentConfig::load()?;
     let provider = OpenAICompatibleProvider::new(config);
     let tools = ToolDispatcher::new(PathBuf::from(&workspace_root));
     let sink = AppEventSink { app };

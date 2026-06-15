@@ -173,5 +173,6 @@ pub struct AgentConfig {
 #[serde(rename_all = "camelCase")]
 pub struct ConfigStatus {
     pub configured: bool,
+    pub provider: String,
     pub model: String,
 }
