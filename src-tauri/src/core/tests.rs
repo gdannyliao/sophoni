@@ -4,6 +4,7 @@ use super::storage::Storage;
 use chrono::Utc;
 use rusqlite::params;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use uuid::Uuid;
 
 struct TempDb {
@@ -456,17 +457,34 @@ fn mock_agent_marks_existing_readme_as_modified() {
 
 use super::domain::AgentConfig;
 
+static HOME_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn with_home_dir<T>(home: &Path, f: impl FnOnce() -> T) -> T {
+    let _guard = HOME_ENV_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("HOME env lock poisoned");
+    let orig_home = std::env::var("HOME").ok();
+    std::env::set_var("HOME", home);
+
+    let result = f();
+
+    if let Some(h) = orig_home {
+        std::env::set_var("HOME", h);
+    } else {
+        std::env::remove_var("HOME");
+    }
+
+    result
+}
+
 #[test]
 fn config_returns_not_configured_when_file_missing() {
     let temp = std::env::temp_dir().join(format!("sophoni-home-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&temp).unwrap();
-    let orig_home = std::env::var("HOME").ok();
-    std::env::set_var("HOME", &temp);
 
-    let result = AgentConfig::load();
+    let result = with_home_dir(&temp, AgentConfig::load);
 
-    if let Some(h) = orig_home { std::env::set_var("HOME", h); }
-    else { std::env::remove_var("HOME"); }
     let _ = std::fs::remove_dir_all(&temp);
 
     assert!(matches!(result, Err(super::errors::AppError::ConfigNotConfigured)));
@@ -481,13 +499,9 @@ fn config_loads_api_key_model_base_url() {
         config_dir.join("config.toml"),
         "api_key = \"sk-test\"\nmodel = \"glm-4.6\"\nbase_url = \"https://example.com\"\n",
     ).unwrap();
-    let orig_home = std::env::var("HOME").ok();
-    std::env::set_var("HOME", &temp);
 
-    let cfg = AgentConfig::load().unwrap();
+    let cfg = with_home_dir(&temp, || AgentConfig::load().unwrap());
 
-    if let Some(h) = orig_home { std::env::set_var("HOME", h); }
-    else { std::env::remove_var("HOME"); }
     let _ = std::fs::remove_dir_all(&temp);
 
     assert_eq!(cfg.api_key, "sk-test");
@@ -501,13 +515,9 @@ fn config_applies_defaults_for_optional_fields() {
     let config_dir = temp.join(".config/sophoni");
     std::fs::create_dir_all(&config_dir).unwrap();
     std::fs::write(config_dir.join("config.toml"), "api_key = \"sk-only\"\n").unwrap();
-    let orig_home = std::env::var("HOME").ok();
-    std::env::set_var("HOME", &temp);
 
-    let cfg = AgentConfig::load().unwrap();
+    let cfg = with_home_dir(&temp, || AgentConfig::load().unwrap());
 
-    if let Some(h) = orig_home { std::env::set_var("HOME", h); }
-    else { std::env::remove_var("HOME"); }
     let _ = std::fs::remove_dir_all(&temp);
 
     assert_eq!(cfg.api_key, "sk-only");
@@ -519,13 +529,9 @@ fn config_applies_defaults_for_optional_fields() {
 fn config_status_reports_unconfigured_when_missing() {
     let temp = std::env::temp_dir().join(format!("sophoni-home-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&temp).unwrap();
-    let orig_home = std::env::var("HOME").ok();
-    std::env::set_var("HOME", &temp);
 
-    let status = AgentConfig::status();
+    let status = with_home_dir(&temp, AgentConfig::status);
 
-    if let Some(h) = orig_home { std::env::set_var("HOME", h); }
-    else { std::env::remove_var("HOME"); }
     let _ = std::fs::remove_dir_all(&temp);
 
     assert!(!status.configured);
