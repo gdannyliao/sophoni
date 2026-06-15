@@ -49,6 +49,9 @@ impl ToolDispatcher {
             (AgentToolName::Grep, AgentToolArgs::Grep { pattern, path, include }) => {
                 self.grep(&call.id, pattern, path.as_deref(), include.as_deref()).await
             }
+            (AgentToolName::EditFile, AgentToolArgs::EditFile { path, old_string, new_string, replace_all }) => {
+                self.edit_file(&call.id, path, old_string, new_string, *replace_all).await
+            }
             _ => Err(AppError::Tool("tool name and arguments do not match".into())),
         }
     }
@@ -236,6 +239,72 @@ impl ToolDispatcher {
             file_change: None,
         })
     }
+
+    async fn edit_file(
+        &self,
+        call_id: &str,
+        path: &str,
+        old_string: &str,
+        new_string: &str,
+        replace_all: bool,
+    ) -> AppResult<AgentToolResult> {
+        if old_string == new_string {
+            return Ok(tool_error(call_id, "old_string 和 new_string 相同,无需替换"));
+        }
+
+        let full = self.fs.root().join(path);
+        let content = match self.fs.read_text(&full) {
+            Ok(c) => c,
+            Err(e) => return Ok(tool_error(call_id, &format!("读取失败: {e}"))),
+        };
+
+        let actual_old = match find_actual_string(&content, old_string) {
+            Some(s) => s,
+            None => {
+                return Ok(tool_error(call_id, "未找到匹配的文本。请先 read_file 确认当前内容。"))
+            }
+        };
+
+        let match_count = content.matches(actual_old.as_str()).count();
+        if match_count > 1 && !replace_all {
+            return Ok(tool_error(call_id, &format!(
+                "找到 {match_count} 处匹配,请提供更多上下文使 old_string 唯一,或设 replace_all=true"
+            )));
+        }
+
+        let updated = if replace_all {
+            content.replace(&actual_old, new_string)
+        } else {
+            content.replacen(&actual_old, new_string, 1)
+        };
+
+        let write = match self.fs.write_text_with_snapshot(&full, &updated) {
+            Ok(w) => w,
+            Err(e) => return Ok(tool_error(call_id, &format!("写入失败: {e}"))),
+        };
+
+        let change = FileChange {
+            id: Uuid::new_v4(),
+            task_run_id: Uuid::new_v4(),
+            path: path.to_string(),
+            kind: ChangeKind::Modified,
+            diff: write.diff,
+            created_at: Utc::now(),
+        };
+
+        let summary = if replace_all {
+            format!("已替换 {path} 中全部 {match_count} 处匹配")
+        } else {
+            format!("已替换 {path} 中的 1 处")
+        };
+
+        Ok(AgentToolResult {
+            tool_call_id: call_id.to_string(),
+            content: summary,
+            is_error: false,
+            file_change: Some(change),
+        })
+    }
 }
 
 fn tool_error(call_id: &str, message: &str) -> AgentToolResult {
@@ -264,4 +333,44 @@ fn is_ignored_dir(entry: &walkdir::DirEntry) -> bool {
             .to_str()
             .map(|n| IGNORED_DIRS.contains(&n))
             .unwrap_or(false)
+}
+
+/// 查找文件中匹配 old_string 的实际文本。
+/// 先试精确匹配,失败则归一化引号后重试。
+/// 返回文件里实际的那段文本(保留原引号风格)。
+fn find_actual_string(content: &str, old_string: &str) -> Option<String> {
+    // 1. 精确匹配
+    if content.contains(old_string) {
+        return Some(old_string.to_string());
+    }
+
+    // 2. 归一化引号后匹配
+    // 曲引号(3 字节)和直引号(1 字节)字节长度不同,用字符序列对齐。
+    let content_chars: Vec<char> = content.chars().collect();
+    let old_chars: Vec<char> = old_string.chars().collect();
+
+    let norm_content: String = content_chars.iter().map(|c| normalize_one_quote(*c)).collect();
+    let norm_old: String = old_chars.iter().map(|c| normalize_one_quote(*c)).collect();
+
+    let idx = norm_content.find(&norm_old)?;
+
+    // norm_content.find 返回字节索引,转成字符索引。
+    let char_start = norm_content[..idx].chars().count();
+    let char_len = old_chars.len();
+
+    // 从原 content 的字符序列里取对应片段(保留原引号)。
+    let actual: String = content_chars[char_start..char_start + char_len].iter().collect();
+    Some(actual)
+}
+
+fn normalize_quotes(s: &str) -> String {
+    s.chars().map(normalize_one_quote).collect()
+}
+
+fn normalize_one_quote(c: char) -> char {
+    match c {
+        '\u{201C}' | '\u{201D}' => '"',
+        '\u{2018}' | '\u{2019}' => '\'',
+        other => other,
+    }
 }
