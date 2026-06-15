@@ -354,6 +354,7 @@ fn tool_call_event(call: &AgentToolCall) -> AgentEvent {
             format!("limit={limit}"),
             format!("limit: {limit}"),
         ),
+        AgentToolArgs::RunCommand { .. } => ("run_command", "(待实现)".to_string(), String::new()),
     };
     AgentEvent {
         kind: "tool_call".into(),

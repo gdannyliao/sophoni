@@ -123,6 +123,7 @@ pub enum AgentToolName {
     ReadAcceptanceReport,
     ReadRuntimeLog,
     ListAcceptanceRuns,
+    RunCommand,
 }
 
 #[derive(Debug, Clone)]
@@ -160,6 +161,7 @@ pub enum AgentToolArgs {
     ListAcceptanceRuns {
         limit: usize,
     },
+    RunCommand { command: String },
 }
 
 #[derive(Debug, Clone)]

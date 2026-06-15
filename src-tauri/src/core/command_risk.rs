@@ -58,18 +58,29 @@ pub fn classify_command(command: &str, _workspace_root: &str) -> CommandRisk {
         return CommandRisk::High;
     }
 
-    let exact_low_risk = [
+    let low_risk_prefixes = [
         "ls",
-        "ls -la",
+        "rg",
         "git status",
         "git diff",
-        "npm test",
-        "pnpm test",
-        "yarn test",
+        "git log",
         "cargo test",
+        "cargo check",
+        "cargo build",
+        "cargo clippy",
+        "npm test",
+        "npm run build",
+        "pnpm test",
+        "pnpm build",
+        "pnpm check",
+        "yarn test",
+        "tsc",
     ];
 
-    if exact_low_risk.contains(&normalized.as_str()) {
+    if low_risk_prefixes
+        .iter()
+        .any(|prefix| normalized == *prefix || normalized.starts_with(&format!("{prefix} ")))
+    {
         return CommandRisk::Low;
     }
 
@@ -99,7 +110,7 @@ fn has_rg_shell_expansion_risk(normalized: &str) -> bool {
         && (normalized.contains('\\') || normalized.contains('$'))
 }
 
-fn shell_words(command: &str) -> Vec<String> {
+pub(crate) fn shell_words(command: &str) -> Vec<String> {
     let mut words = Vec::new();
     let mut current = String::new();
     let mut quote: Option<char> = None;

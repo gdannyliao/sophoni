@@ -208,6 +208,7 @@ impl OpenAICompatibleProvider {
                 "list_acceptance_runs",
                 serde_json::json!({ "limit": limit }),
             ),
+            AgentToolArgs::RunCommand { .. } => ("run_command", serde_json::json!({})),
         };
         OpenAIToolCall {
             id: call.id.clone(),
@@ -261,6 +262,7 @@ impl OpenAICompatibleProvider {
             "read_acceptance_report" => AgentToolName::ReadAcceptanceReport,
             "read_runtime_log" => AgentToolName::ReadRuntimeLog,
             "list_acceptance_runs" => AgentToolName::ListAcceptanceRuns,
+            "run_command" => AgentToolName::RunCommand,
             other => return Err(AppError::Provider(format!("unknown tool: {other}"))),
         };
         let args: serde_json::Value = serde_json::from_str(&gtc.function.arguments)
@@ -374,6 +376,9 @@ impl OpenAICompatibleProvider {
                     .map(|v| v.clamp(1, LIST_ACCEPTANCE_RUNS_MAX_LIMIT) as usize)
                     .unwrap_or(LIST_ACCEPTANCE_RUNS_DEFAULT_LIMIT);
                 AgentToolArgs::ListAcceptanceRuns { limit }
+            }
+            AgentToolName::RunCommand => {
+                return Err(AppError::Provider("run_command not yet implemented".into()));
             }
         };
         Ok(AgentToolCall {
