@@ -477,3 +477,492 @@ pub(crate) struct OpenAIResponse {
 pub(crate) struct OpenAIChoice {
     pub message: OpenAIMessage,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::domain::{AgentToolArgs, AgentToolResult, ConversationTurn, ProviderResponse};
+    use super::{
+        OpenAIChoice, OpenAIFunction, OpenAIMessage, OpenAICompatibleProvider, OpenAIResponse,
+        OpenAIToolCall,
+    };
+
+    #[test]
+    fn glm_translates_user_turn_to_message() {
+        let turn = ConversationTurn::User { content: "hi".into() };
+        let msg = OpenAICompatibleProvider::turn_to_openai_message(&turn);
+        assert_eq!(msg.role, "user");
+        assert_eq!(msg.content.as_deref(), Some("hi"));
+        assert!(msg.tool_calls.is_none());
+        assert!(msg.tool_call_id.is_none());
+    }
+
+    #[test]
+    fn glm_translates_tool_turn_to_message() {
+        let turn = ConversationTurn::Tool {
+            tool_call_id: "tc-9".into(),
+            result: AgentToolResult {
+                tool_call_id: "tc-9".into(),
+                content: "file body".into(),
+                is_error: false,
+                file_change: None,
+            },
+        };
+        let msg = OpenAICompatibleProvider::turn_to_openai_message(&turn);
+        assert_eq!(msg.role, "tool");
+        assert_eq!(msg.tool_call_id.as_deref(), Some("tc-9"));
+        assert_eq!(msg.content.as_deref(), Some("file body"));
+    }
+
+    #[test]
+    fn glm_translates_response_with_tool_calls() {
+        let resp = OpenAIResponse {
+            choices: vec![OpenAIChoice {
+                message: OpenAIMessage {
+                    role: "assistant".into(),
+                    content: None,
+                    tool_calls: Some(vec![OpenAIToolCall {
+                        id: "call-1".into(),
+                        kind: "function".into(),
+                        function: OpenAIFunction {
+                            name: "read_file".into(),
+                            arguments: "{\"path\":\"README.md\"}".into(),
+                        },
+                    }]),
+                    tool_call_id: None,
+                },
+            }],
+        };
+        let translated = OpenAICompatibleProvider::translate_response(resp).unwrap();
+        match translated {
+            ProviderResponse::ToolCalls(calls) => {
+                assert_eq!(calls.len(), 1);
+                assert_eq!(calls[0].id, "call-1");
+                match &calls[0].arguments {
+                    AgentToolArgs::Read { path } => assert_eq!(path, "README.md"),
+                    _ => panic!("expected Read args"),
+                }
+            }
+            _ => panic!("expected ToolCalls"),
+        }
+    }
+
+    #[test]
+    fn glm_translates_response_without_tool_calls_as_final_answer() {
+        let resp = OpenAIResponse {
+            choices: vec![OpenAIChoice {
+                message: OpenAIMessage {
+                    role: "assistant".into(),
+                    content: Some("all done".into()),
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+            }],
+        };
+        let translated = OpenAICompatibleProvider::translate_response(resp).unwrap();
+        match translated {
+            ProviderResponse::FinalAnswer(t) => assert_eq!(t, "all done"),
+            _ => panic!("expected FinalAnswer"),
+        }
+    }
+
+    #[test]
+    fn glm_parses_list_files_tool_call() {
+        let resp = OpenAIResponse {
+            choices: vec![OpenAIChoice {
+                message: OpenAIMessage {
+                    role: "assistant".into(),
+                    content: None,
+                    tool_calls: Some(vec![OpenAIToolCall {
+                        id: "c1".into(),
+                        kind: "function".into(),
+                        function: OpenAIFunction {
+                            name: "list_files".into(),
+                            arguments: r#"{"path":"src","recursive":true}"#.into(),
+                        },
+                    }]),
+                    tool_call_id: None,
+                },
+            }],
+        };
+        let translated = OpenAICompatibleProvider::translate_response(resp).unwrap();
+        match translated {
+            ProviderResponse::ToolCalls(calls) => {
+                assert_eq!(calls.len(), 1);
+                match &calls[0].arguments {
+                    AgentToolArgs::ListFiles { path, recursive } => {
+                        assert_eq!(path.as_deref(), Some("src"));
+                        assert!(*recursive);
+                    }
+                    _ => panic!("expected ListFiles args"),
+                }
+            }
+            _ => panic!("expected ToolCalls"),
+        }
+    }
+
+    #[test]
+    fn glm_parses_grep_tool_call() {
+        let resp = OpenAIResponse {
+            choices: vec![OpenAIChoice {
+                message: OpenAIMessage {
+                    role: "assistant".into(),
+                    content: None,
+                    tool_calls: Some(vec![OpenAIToolCall {
+                        id: "c2".into(),
+                        kind: "function".into(),
+                        function: OpenAIFunction {
+                            name: "grep".into(),
+                            arguments: r#"{"pattern":"invoke","include":"*.ts"}"#.into(),
+                        },
+                    }]),
+                    tool_call_id: None,
+                },
+            }],
+        };
+        let translated = OpenAICompatibleProvider::translate_response(resp).unwrap();
+        match translated {
+            ProviderResponse::ToolCalls(calls) => {
+                assert_eq!(calls.len(), 1);
+                match &calls[0].arguments {
+                    AgentToolArgs::Grep {
+                        pattern,
+                        path,
+                        include,
+                    } => {
+                        assert_eq!(pattern, "invoke");
+                        assert!(path.is_none());
+                        assert_eq!(include.as_deref(), Some("*.ts"));
+                    }
+                    _ => panic!("expected Grep args"),
+                }
+            }
+            _ => panic!("expected ToolCalls"),
+        }
+    }
+
+    #[test]
+    fn glm_parses_read_runtime_log_tool_call() {
+        let resp = OpenAIResponse {
+            choices: vec![OpenAIChoice {
+                message: OpenAIMessage {
+                    role: "assistant".into(),
+                    content: None,
+                    tool_calls: Some(vec![OpenAIToolCall {
+                        id: "c-runtime".into(),
+                        kind: "function".into(),
+                        function: OpenAIFunction {
+                            name: "read_runtime_log".into(),
+                            arguments: r#"{"run_id":"2026-06-15T09-00-00Z","file_name":"runtime.log","max_lines":3}"#.into(),
+                        },
+                    }]),
+                    tool_call_id: None,
+                },
+            }],
+        };
+        let translated = OpenAICompatibleProvider::translate_response(resp).unwrap();
+        match translated {
+            ProviderResponse::ToolCalls(calls) => {
+                assert_eq!(calls.len(), 1);
+                match &calls[0].arguments {
+                    AgentToolArgs::ReadRuntimeLog {
+                        run_id,
+                        file_name,
+                        max_lines,
+                    } => {
+                        assert_eq!(run_id.as_deref(), Some("2026-06-15T09-00-00Z"));
+                        assert_eq!(file_name, "runtime.log");
+                        assert_eq!(*max_lines, 3);
+                    }
+                    _ => panic!("expected ReadRuntimeLog args"),
+                }
+            }
+            _ => panic!("expected ToolCalls"),
+        }
+    }
+
+    #[test]
+    fn glm_parses_read_runtime_log_huge_max_lines_with_safe_clamp() {
+        let resp = OpenAIResponse {
+            choices: vec![OpenAIChoice {
+                message: OpenAIMessage {
+                    role: "assistant".into(),
+                    content: None,
+                    tool_calls: Some(vec![OpenAIToolCall {
+                        id: "c-runtime-huge".into(),
+                        kind: "function".into(),
+                        function: OpenAIFunction {
+                            name: "read_runtime_log".into(),
+                            arguments: r#"{"file_name":"runtime.log","max_lines":18446744073709551615}"#.into(),
+                        },
+                    }]),
+                    tool_call_id: None,
+                },
+            }],
+        };
+        let translated = OpenAICompatibleProvider::translate_response(resp).unwrap();
+        match translated {
+            ProviderResponse::ToolCalls(calls) => match &calls[0].arguments {
+                AgentToolArgs::ReadRuntimeLog { max_lines, .. } => {
+                    assert_eq!(*max_lines, 200);
+                }
+                _ => panic!("expected ReadRuntimeLog args"),
+            },
+            _ => panic!("expected ToolCalls"),
+        }
+    }
+
+    #[test]
+    fn glm_parses_list_acceptance_runs_default_limit() {
+        let resp = OpenAIResponse {
+            choices: vec![OpenAIChoice {
+                message: OpenAIMessage {
+                    role: "assistant".into(),
+                    content: None,
+                    tool_calls: Some(vec![OpenAIToolCall {
+                        id: "c-list-acceptance".into(),
+                        kind: "function".into(),
+                        function: OpenAIFunction {
+                            name: "list_acceptance_runs".into(),
+                            arguments: r#"{}"#.into(),
+                        },
+                    }]),
+                    tool_call_id: None,
+                },
+            }],
+        };
+        let translated = OpenAICompatibleProvider::translate_response(resp).unwrap();
+        match translated {
+            ProviderResponse::ToolCalls(calls) => {
+                assert_eq!(calls.len(), 1);
+                match &calls[0].arguments {
+                    AgentToolArgs::ListAcceptanceRuns { limit } => {
+                        assert_eq!(*limit, 5);
+                    }
+                    _ => panic!("expected ListAcceptanceRuns args"),
+                }
+            }
+            _ => panic!("expected ToolCalls"),
+        }
+    }
+
+    #[test]
+    fn glm_parses_list_acceptance_runs_huge_limit_with_safe_clamp() {
+        let resp = OpenAIResponse {
+            choices: vec![OpenAIChoice {
+                message: OpenAIMessage {
+                    role: "assistant".into(),
+                    content: None,
+                    tool_calls: Some(vec![OpenAIToolCall {
+                        id: "c-list-acceptance-huge".into(),
+                        kind: "function".into(),
+                        function: OpenAIFunction {
+                            name: "list_acceptance_runs".into(),
+                            arguments: r#"{"limit":18446744073709551615}"#.into(),
+                        },
+                    }]),
+                    tool_call_id: None,
+                },
+            }],
+        };
+        let translated = OpenAICompatibleProvider::translate_response(resp).unwrap();
+        match translated {
+            ProviderResponse::ToolCalls(calls) => match &calls[0].arguments {
+                AgentToolArgs::ListAcceptanceRuns { limit } => {
+                    assert_eq!(*limit, 20);
+                }
+                _ => panic!("expected ListAcceptanceRuns args"),
+            },
+            _ => panic!("expected ToolCalls"),
+        }
+    }
+
+    #[test]
+    fn glm_parses_read_acceptance_report_optional_run_id() {
+        let resp = OpenAIResponse {
+            choices: vec![OpenAIChoice {
+                message: OpenAIMessage {
+                    role: "assistant".into(),
+                    content: None,
+                    tool_calls: Some(vec![OpenAIToolCall {
+                        id: "c-report".into(),
+                        kind: "function".into(),
+                        function: OpenAIFunction {
+                            name: "read_acceptance_report".into(),
+                            arguments: r#"{}"#.into(),
+                        },
+                    }]),
+                    tool_call_id: None,
+                },
+            }],
+        };
+        let translated = OpenAICompatibleProvider::translate_response(resp).unwrap();
+        match translated {
+            ProviderResponse::ToolCalls(calls) => {
+                assert_eq!(calls.len(), 1);
+                match &calls[0].arguments {
+                    AgentToolArgs::ReadAcceptanceReport { run_id } => {
+                        assert!(run_id.is_none());
+                    }
+                    _ => panic!("expected ReadAcceptanceReport args"),
+                }
+            }
+            _ => panic!("expected ToolCalls"),
+        }
+    }
+
+    #[test]
+    fn glm_parses_edit_file_tool_call() {
+        let resp = OpenAIResponse {
+            choices: vec![OpenAIChoice {
+                message: OpenAIMessage {
+                    role: "assistant".into(),
+                    content: None,
+                    tool_calls: Some(vec![OpenAIToolCall {
+                        id: "c1".into(),
+                        kind: "function".into(),
+                        function: OpenAIFunction {
+                            name: "edit_file".into(),
+                            arguments: r#"{"path":"a.txt","old_string":"hello","new_string":"world"}"#
+                                .into(),
+                        },
+                    }]),
+                    tool_call_id: None,
+                },
+            }],
+        };
+        let translated = OpenAICompatibleProvider::translate_response(resp).unwrap();
+        match translated {
+            ProviderResponse::ToolCalls(calls) => {
+                assert_eq!(calls.len(), 1);
+                match &calls[0].arguments {
+                    AgentToolArgs::EditFile {
+                        path,
+                        old_string,
+                        new_string,
+                        replace_all,
+                    } => {
+                        assert_eq!(path, "a.txt");
+                        assert_eq!(old_string, "hello");
+                        assert_eq!(new_string, "world");
+                        assert!(!replace_all);
+                    }
+                    _ => panic!("expected EditFile args"),
+                }
+            }
+            _ => panic!("expected ToolCalls"),
+        }
+    }
+
+    #[test]
+    fn glm_parses_edit_file_with_replace_all() {
+        let resp = OpenAIResponse {
+            choices: vec![OpenAIChoice {
+                message: OpenAIMessage {
+                    role: "assistant".into(),
+                    content: None,
+                    tool_calls: Some(vec![OpenAIToolCall {
+                        id: "c2".into(),
+                        kind: "function".into(),
+                        function: OpenAIFunction {
+                            name: "edit_file".into(),
+                            arguments:
+                                r#"{"path":"a.txt","old_string":"foo","new_string":"bar","replace_all":true}"#
+                                    .into(),
+                        },
+                    }]),
+                    tool_call_id: None,
+                },
+            }],
+        };
+        let translated = OpenAICompatibleProvider::translate_response(resp).unwrap();
+        match translated {
+            ProviderResponse::ToolCalls(calls) => match &calls[0].arguments {
+                AgentToolArgs::EditFile { replace_all, .. } => {
+                    assert!(*replace_all);
+                }
+                _ => panic!("expected EditFile args"),
+            },
+            _ => panic!("expected ToolCalls"),
+        }
+    }
+
+    #[test]
+    fn glm_parses_edit_file_missing_field_is_error() {
+        let resp = OpenAIResponse {
+            choices: vec![OpenAIChoice {
+                message: OpenAIMessage {
+                    role: "assistant".into(),
+                    content: None,
+                    tool_calls: Some(vec![OpenAIToolCall {
+                        id: "c3".into(),
+                        kind: "function".into(),
+                        function: OpenAIFunction {
+                            name: "edit_file".into(),
+                            arguments: r#"{"path":"a.txt"}"#.into(),
+                        },
+                    }]),
+                    tool_call_id: None,
+                },
+            }],
+        };
+        let result = OpenAICompatibleProvider::translate_response(resp);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn glm_parses_run_command_tool_call() {
+        let resp = OpenAIResponse {
+            choices: vec![OpenAIChoice {
+                message: OpenAIMessage {
+                    role: "assistant".into(),
+                    content: None,
+                    tool_calls: Some(vec![OpenAIToolCall {
+                        id: "c1".into(),
+                        kind: "function".into(),
+                        function: OpenAIFunction {
+                            name: "run_command".into(),
+                            arguments: r#"{"command":"cargo test"}"#.into(),
+                        },
+                    }]),
+                    tool_call_id: None,
+                },
+            }],
+        };
+        let translated = OpenAICompatibleProvider::translate_response(resp).unwrap();
+        match translated {
+            ProviderResponse::ToolCalls(calls) => {
+                assert_eq!(calls.len(), 1);
+                match &calls[0].arguments {
+                    AgentToolArgs::RunCommand { command } => {
+                        assert_eq!(command, "cargo test");
+                    }
+                    _ => panic!("expected RunCommand args"),
+                }
+            }
+            _ => panic!("expected ToolCalls"),
+        }
+    }
+
+    #[test]
+    fn glm_parses_run_command_missing_field_is_error() {
+        let resp = OpenAIResponse {
+            choices: vec![OpenAIChoice {
+                message: OpenAIMessage {
+                    role: "assistant".into(),
+                    content: None,
+                    tool_calls: Some(vec![OpenAIToolCall {
+                        id: "c2".into(),
+                        kind: "function".into(),
+                        function: OpenAIFunction {
+                            name: "run_command".into(),
+                            arguments: r#"{}"#.into(),
+                        },
+                    }]),
+                    tool_call_id: None,
+                },
+            }],
+        };
+        let result = OpenAICompatibleProvider::translate_response(resp);
+        assert!(result.is_err());
+    }
+}
