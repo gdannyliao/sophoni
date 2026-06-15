@@ -7,8 +7,8 @@ use super::domain::{
 };
 use super::errors::{AppError, AppResult};
 
-/// Model-agnostic provider contract. Implementations (GlmProvider, future
-/// OpenAI/Claude providers) translate domain types to/from their wire format.
+/// Model-agnostic provider contract. Implementations (OpenAICompatibleProvider for GLM/MiniMax, future
+/// Claude/Gemini providers) translate domain types to/from their wire format.
 #[async_trait]
 pub trait AgentProvider: Send {
     async fn complete(
@@ -90,14 +90,14 @@ pub fn fake_write_call(id: &str, path: &str, content: &str) -> AgentToolCall {
     }
 }
 
-// ── GlmProvider: real GLM API client ──
+// ── OpenAICompatibleProvider: works with any OpenAI-compatible API (GLM, MiniMax, etc.) ──
 
-pub struct GlmProvider {
+pub struct OpenAICompatibleProvider {
     config: AgentConfig,
     http: reqwest::Client,
 }
 
-impl GlmProvider {
+impl OpenAICompatibleProvider {
     pub fn new(config: AgentConfig) -> Self {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
@@ -107,25 +107,25 @@ impl GlmProvider {
     }
 
     /// Translate a model-agnostic turn into the GLM wire format.
-    pub(crate) fn turn_to_glm_message(turn: &ConversationTurn) -> GlmMessage {
+    pub(crate) fn turn_to_openai_message(turn: &ConversationTurn) -> OpenAIMessage {
         match turn {
-            ConversationTurn::User { content } => GlmMessage {
+            ConversationTurn::User { content } => OpenAIMessage {
                 role: "user".to_string(),
                 content: Some(content.clone()),
                 tool_calls: None,
                 tool_call_id: None,
             },
-            ConversationTurn::Assistant { content, tool_calls } => GlmMessage {
+            ConversationTurn::Assistant { content, tool_calls } => OpenAIMessage {
                 role: "assistant".to_string(),
                 content: content.clone(),
                 tool_calls: if tool_calls.is_empty() {
                     None
                 } else {
-                    Some(tool_calls.iter().map(Self::tool_call_to_glm).collect())
+                    Some(tool_calls.iter().map(Self::tool_call_to_openai).collect())
                 },
                 tool_call_id: None,
             },
-            ConversationTurn::Tool { tool_call_id, result } => GlmMessage {
+            ConversationTurn::Tool { tool_call_id, result } => OpenAIMessage {
                 role: "tool".to_string(),
                 content: Some(result.content.clone()),
                 tool_calls: None,
@@ -134,7 +134,7 @@ impl GlmProvider {
         }
     }
 
-    fn tool_call_to_glm(call: &AgentToolCall) -> GlmToolCall {
+    fn tool_call_to_openai(call: &AgentToolCall) -> OpenAIToolCall {
         let (name, arguments) = match &call.arguments {
             AgentToolArgs::Read { path } => ("read_file", serde_json::json!({ "path": path })),
             AgentToolArgs::Write { path, content } => (
@@ -159,20 +159,20 @@ impl GlmProvider {
                 }),
             ),
         };
-        GlmToolCall {
+        OpenAIToolCall {
             id: call.id.clone(),
             kind: "function".to_string(),
-            function: GlmFunction {
+            function: OpenAIFunction {
                 name: name.to_string(),
                 arguments: arguments.to_string(),
             },
         }
     }
 
-    fn tool_schema_to_glm(schema: &AgentToolSchema) -> GlmToolDef {
-        GlmToolDef {
+    fn tool_schema_to_openai(schema: &AgentToolSchema) -> OpenAIToolDef {
+        OpenAIToolDef {
             kind: "function".to_string(),
-            function: GlmToolFunctionDef {
+            function: OpenAIToolFunctionDef {
                 name: schema.name.to_string(),
                 description: schema.description.to_string(),
                 parameters: schema.parameters.clone(),
@@ -181,7 +181,7 @@ impl GlmProvider {
     }
 
     /// Translate the GLM response DTO into a model-agnostic ProviderResponse.
-    pub(crate) fn translate_response(resp: GlmResponse) -> AppResult<ProviderResponse> {
+    pub(crate) fn translate_response(resp: OpenAIResponse) -> AppResult<ProviderResponse> {
         let choice = resp
             .choices
             .into_iter()
@@ -201,7 +201,7 @@ impl GlmProvider {
         }
     }
 
-    fn parse_tool_call(gtc: GlmToolCall) -> AppResult<AgentToolCall> {
+    fn parse_tool_call(gtc: OpenAIToolCall) -> AppResult<AgentToolCall> {
         let name = match gtc.function.name.as_str() {
             "read_file" => AgentToolName::ReadFile,
             "write_file" => AgentToolName::WriteFile,
@@ -274,7 +274,7 @@ impl GlmProvider {
 }
 
 #[async_trait]
-impl AgentProvider for GlmProvider {
+impl AgentProvider for OpenAICompatibleProvider {
     async fn complete(
         &mut self,
         system: &SystemPrompt,
@@ -282,21 +282,21 @@ impl AgentProvider for GlmProvider {
         tools: &[AgentToolSchema],
     ) -> AppResult<ProviderResponse> {
         let mut messages = Vec::with_capacity(turns.len() + 1);
-        messages.push(GlmMessage {
+        messages.push(OpenAIMessage {
             role: "system".to_string(),
             content: Some(system.0.clone()),
             tool_calls: None,
             tool_call_id: None,
         });
         for turn in turns {
-            messages.push(Self::turn_to_glm_message(turn));
+            messages.push(Self::turn_to_openai_message(turn));
         }
 
-        let glm_tools: Vec<GlmToolDef> = tools.iter().map(Self::tool_schema_to_glm).collect();
-        let req = GlmRequest {
+        let openai_tools: Vec<OpenAIToolDef> = tools.iter().map(Self::tool_schema_to_openai).collect();
+        let req = OpenAIRequest {
             model: self.config.model.clone(),
             messages,
-            tools: Some(glm_tools),
+            tools: Some(openai_tools),
             tool_choice: Some("auto".to_string()),
         };
 
@@ -316,72 +316,72 @@ impl AgentProvider for GlmProvider {
             return Err(AppError::Provider(format!("HTTP {status}: {body}")));
         }
 
-        let glm_resp: GlmResponse = resp
+        let openai_resp: OpenAIResponse = resp
             .json()
             .await
             .map_err(|e| AppError::Provider(format!("failed to parse response: {e}")))?;
 
-        Self::translate_response(glm_resp)
+        Self::translate_response(openai_resp)
     }
 }
 
 // ── GLM wire-format DTOs (private to this module) ──
 
 #[derive(Serialize)]
-struct GlmRequest {
+struct OpenAIRequest {
     model: String,
-    messages: Vec<GlmMessage>,
+    messages: Vec<OpenAIMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<Vec<GlmToolDef>>,
+    tools: Option<Vec<OpenAIToolDef>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-pub(crate) struct GlmMessage {
+pub(crate) struct OpenAIMessage {
     pub role: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub tool_calls: Option<Vec<GlmToolCall>>,
+    pub tool_calls: Option<Vec<OpenAIToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tool_call_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-pub(crate) struct GlmToolCall {
+pub(crate) struct OpenAIToolCall {
     pub id: String,
     #[serde(rename = "type")]
     pub kind: String,
-    pub function: GlmFunction,
+    pub function: OpenAIFunction,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-pub(crate) struct GlmFunction {
+pub(crate) struct OpenAIFunction {
     pub name: String,
     pub arguments: String,
 }
 
 #[derive(Serialize)]
-struct GlmToolDef {
+struct OpenAIToolDef {
     #[serde(rename = "type")]
     kind: String,
-    function: GlmToolFunctionDef,
+    function: OpenAIToolFunctionDef,
 }
 
 #[derive(Serialize)]
-struct GlmToolFunctionDef {
+struct OpenAIToolFunctionDef {
     name: String,
     description: String,
     parameters: serde_json::Value,
 }
 
 #[derive(Deserialize, Debug)]
-pub(crate) struct GlmResponse {
-    pub choices: Vec<GlmChoice>,
+pub(crate) struct OpenAIResponse {
+    pub choices: Vec<OpenAIChoice>,
 }
 
 #[derive(Deserialize, Debug)]
-pub(crate) struct GlmChoice {
-    pub message: GlmMessage,
+pub(crate) struct OpenAIChoice {
+    pub message: OpenAIMessage,
 }
