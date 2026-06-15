@@ -46,6 +46,9 @@ impl ToolDispatcher {
             (AgentToolName::ListFiles, AgentToolArgs::ListFiles { path, recursive }) => {
                 self.list_files(&call.id, path.as_deref(), *recursive).await
             }
+            (AgentToolName::Grep, AgentToolArgs::Grep { pattern, path, include }) => {
+                self.grep(&call.id, pattern, path.as_deref(), include.as_deref()).await
+            }
             _ => Err(AppError::Tool("tool name and arguments do not match".into())),
         }
     }
@@ -138,6 +141,97 @@ impl ToolDispatcher {
         Ok(AgentToolResult {
             tool_call_id: call_id.to_string(),
             content,
+            is_error: false,
+            file_change: None,
+        })
+    }
+
+    async fn grep(
+        &self,
+        call_id: &str,
+        pattern: &str,
+        path: Option<&str>,
+        include: Option<&str>,
+    ) -> AppResult<AgentToolResult> {
+        let re = match regex::Regex::new(pattern) {
+            Ok(re) => re,
+            Err(e) => return Ok(tool_error(call_id, &format!("正则编译失败: {e}"))),
+        };
+
+        let root = self.fs.root().to_path_buf();
+        let search_root = match path {
+            Some(p) => match resolve_within_root(&root, p) {
+                Ok(t) => t,
+                Err(e) => return Ok(tool_error(call_id, &e)),
+            },
+            None => root.clone(),
+        };
+
+        let include_glob = include.and_then(|g| glob::Pattern::new(g).ok());
+
+        let mut matches = Vec::new();
+        let walker = WalkDir::new(&search_root)
+            .follow_links(false)
+            .max_depth(MAX_DEPTH)
+            .into_iter()
+            .filter_entry(|e| !is_ignored_dir(e));
+
+        for entry in walker {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            if !entry.file_type().is_file() {
+                continue;
+            }
+
+            let too_big = entry
+                .metadata()
+                .map(|m| m.len() > MAX_FILE_BYTES)
+                .unwrap_or(true);
+            if too_big {
+                continue;
+            }
+
+            if let Some(ref g) = include_glob {
+                let fname = entry.file_name().to_string_lossy().to_string();
+                if !g.matches(&fname) {
+                    continue;
+                }
+            }
+
+            let rel = entry.path().strip_prefix(&root).unwrap_or(entry.path());
+            let content = match std::fs::read_to_string(entry.path()) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            for (lineno, line) in content.lines().enumerate() {
+                if re.is_match(line) {
+                    matches.push(format!("{}:{}: {}", rel.display(), lineno + 1, line));
+                    if matches.len() >= GREP_MAX {
+                        break;
+                    }
+                }
+            }
+            if matches.len() >= GREP_MAX {
+                break;
+            }
+        }
+
+        let truncated = matches.len() >= GREP_MAX;
+        let mut output = matches.join("\n");
+        if output.is_empty() {
+            output = "（无匹配）".to_string();
+        }
+        if truncated {
+            output.push_str(&format!(
+                "\n（结果已截断，只显示前 {GREP_MAX} 条匹配。请缩小搜索范围或用更精确的模式）"
+            ));
+        }
+
+        Ok(AgentToolResult {
+            tool_call_id: call_id.to_string(),
+            content: output,
             is_error: false,
             file_change: None,
         })
