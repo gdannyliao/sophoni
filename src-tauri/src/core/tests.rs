@@ -2179,3 +2179,66 @@ fn glm_parses_edit_file_missing_field_is_error() {
     let result = super::provider::OpenAICompatibleProvider::translate_response(resp);
     assert!(result.is_err());
 }
+
+// ── command_risk 前缀匹配测试 ──
+
+#[test]
+fn risk_cargo_test_is_low() {
+    assert_eq!(classify_command("cargo test", ""), CommandRisk::Low);
+}
+
+#[test]
+fn risk_cargo_test_with_args_is_low() {
+    assert_eq!(
+        classify_command("cargo test -- --test-name foo", ""),
+        CommandRisk::Low
+    );
+}
+
+#[test]
+fn risk_cargo_check_is_low() {
+    assert_eq!(classify_command("cargo check", ""), CommandRisk::Low);
+}
+
+#[test]
+fn risk_cargo_clippy_is_low() {
+    assert_eq!(classify_command("cargo clippy", ""), CommandRisk::Low);
+}
+
+#[test]
+fn risk_tsc_is_low() {
+    assert_eq!(classify_command("tsc --noEmit", ""), CommandRisk::Low);
+}
+
+#[test]
+fn risk_pnpm_build_is_low() {
+    assert_eq!(classify_command("pnpm build", ""), CommandRisk::Low);
+}
+
+#[test]
+fn risk_git_log_is_low() {
+    assert_eq!(classify_command("git log --oneline -5", ""), CommandRisk::Low);
+}
+
+#[test]
+fn risk_cargo_test_with_shell_injection_is_high() {
+    assert_eq!(
+        classify_command("cargo test && rm -rf /", ""),
+        CommandRisk::High
+    );
+}
+
+#[test]
+fn risk_rm_is_high() {
+    assert_eq!(classify_command("rm -rf /", ""), CommandRisk::High);
+}
+
+#[test]
+fn risk_npm_install_is_high() {
+    assert_eq!(classify_command("npm install", ""), CommandRisk::High);
+}
+
+#[test]
+fn risk_echo_is_high() {
+    assert_eq!(classify_command("echo hello", ""), CommandRisk::High);
+}
