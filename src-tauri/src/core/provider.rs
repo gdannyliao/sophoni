@@ -149,6 +149,7 @@ impl GlmProvider {
                 "grep",
                 serde_json::json!({ "pattern": pattern, "path": path, "include": include }),
             ),
+            AgentToolArgs::EditFile { .. } => ("edit_file", serde_json::json!({})),
         };
         GlmToolCall {
             id: call.id.clone(),
@@ -198,6 +199,7 @@ impl GlmProvider {
             "write_file" => AgentToolName::WriteFile,
             "list_files" => AgentToolName::ListFiles,
             "grep" => AgentToolName::Grep,
+            "edit_file" => AgentToolName::EditFile,
             other => return Err(AppError::Provider(format!("unknown tool: {other}"))),
         };
         let args: serde_json::Value = serde_json::from_str(&gtc.function.arguments)
@@ -238,6 +240,9 @@ impl GlmProvider {
                 let path = args.get("path").and_then(|v| v.as_str()).map(String::from);
                 let include = args.get("include").and_then(|v| v.as_str()).map(String::from);
                 AgentToolArgs::Grep { pattern, path, include }
+            }
+            AgentToolName::EditFile => {
+                return Err(AppError::Provider("edit_file not yet implemented".into()));
             }
         };
         Ok(AgentToolCall { id: gtc.id, name, arguments })

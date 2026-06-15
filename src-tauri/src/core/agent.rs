@@ -231,6 +231,7 @@ fn tool_call_event(call: &AgentToolCall) -> AgentEvent {
                 format!("pattern: {pattern}\npath: {p}\ninclude: {inc}"),
             )
         }
+        AgentToolArgs::EditFile { .. } => ("edit_file", "(待实现)".to_string(), String::new()),
     };
     AgentEvent {
         kind: "tool_call".into(),

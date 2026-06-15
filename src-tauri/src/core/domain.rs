@@ -117,6 +117,7 @@ pub enum AgentToolName {
     WriteFile,
     ListFiles,
     Grep,
+    EditFile,
 }
 
 #[derive(Debug, Clone)]
@@ -125,6 +126,12 @@ pub enum AgentToolArgs {
     Write { path: String, content: String },
     ListFiles { path: Option<String>, recursive: bool },
     Grep { pattern: String, path: Option<String>, include: Option<String> },
+    EditFile {
+        path: String,
+        old_string: String,
+        new_string: String,
+        replace_all: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
