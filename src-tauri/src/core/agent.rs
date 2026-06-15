@@ -170,6 +170,9 @@ fn tool_call_event(call: &AgentToolCall) -> AgentEvent {
     let (label, detail) = match &call.arguments {
         AgentToolArgs::Read { path } => ("read_file", path.clone()),
         AgentToolArgs::Write { path, .. } => ("write_file", path.clone()),
+        AgentToolArgs::ListFiles { .. } | AgentToolArgs::Grep { .. } => {
+            ("unknown", "(待实现)".to_string())
+        }
     };
     AgentEvent {
         kind: "tool_call".into(),

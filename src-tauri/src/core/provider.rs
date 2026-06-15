@@ -141,6 +141,9 @@ impl GlmProvider {
                 "write_file",
                 serde_json::json!({ "path": path, "content": content }),
             ),
+            AgentToolArgs::ListFiles { .. } | AgentToolArgs::Grep { .. } => {
+                ("unknown", serde_json::json!({}))
+            }
         };
         GlmToolCall {
             id: call.id.clone(),
@@ -213,6 +216,9 @@ impl GlmProvider {
                     .ok_or_else(|| AppError::Provider("write_file missing content".into()))?
                     .to_string();
                 AgentToolArgs::Write { path, content }
+            }
+            AgentToolName::ListFiles | AgentToolName::Grep => {
+                return Err(AppError::Provider("search tools not yet implemented".into()));
             }
         };
         Ok(AgentToolCall { id: gtc.id, name, arguments })
