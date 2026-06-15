@@ -28,13 +28,16 @@ const SYSTEM_PROMPT: &str = "你是桌面工作区 Agent。只能操作工作区
 - list_files：列出目录内容，了解工作区结构。不确定文件在哪时，先用它探索。
 - grep：按正则搜索文件内容。找某个函数/变量/字符串用在哪时用它。
 - read_file：读取指定文件内容。
-- write_file：写入文件（整文件覆盖）。
+- write_file：写入整个文件（新建或大改时用）。
+- edit_file：精确替换文件中的一段文本（小改时用，比 write_file 省 token）。
 
 工作方式：
-1. 不确定路径时，先 list_files 或 grep 探索，不要瞎猜路径。
+1. 不确定路径时，先 list_files 或 grep 探索。
 2. 改文件前，先用 read_file 看当前内容。
-3. 不要在回复里直接给文件内容，通过工具操作。
-4. 完成任务后给出简短总结。";
+3. 小改动优先用 edit_file（给出要替换的原文和新文本），大改动或新建文件用 write_file。
+4. edit_file 的 old_string 必须与文件内容精确匹配（含缩进和空格）。
+5. 不要在回复里直接给文件内容，通过工具操作。
+6. 完成任务后给出简短总结。";
 
 const MAX_ROUNDS: usize = 12;
 const PER_ROUND_TIMEOUT: Duration = Duration::from_secs(30);
@@ -191,6 +194,20 @@ fn tool_schemas() -> Vec<AgentToolSchema> {
                 "required": ["pattern"]
             }),
         },
+        AgentToolSchema {
+            name: "edit_file",
+            description: "对已有文件做精确文本替换(search-replace)。先 read_file 看准内容,再给出 old_string(必须与文件内容精确匹配,含缩进)和 new_string。old_string 必须在文件中唯一,除非 replace_all=true。",
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "相对工作区根的文件路径" },
+                    "old_string": { "type": "string", "description": "要替换的文本(精确匹配)" },
+                    "new_string": { "type": "string", "description": "替换成的文本(必须与 old_string 不同)" },
+                    "replace_all": { "type": "boolean", "description": "是否替换所有匹配,默认 false(用于重命名等)" }
+                },
+                "required": ["path", "old_string", "new_string"]
+            }),
+        },
     ]
 }
 
@@ -231,7 +248,19 @@ fn tool_call_event(call: &AgentToolCall) -> AgentEvent {
                 format!("pattern: {pattern}\npath: {p}\ninclude: {inc}"),
             )
         }
-        AgentToolArgs::EditFile { .. } => ("edit_file", "(待实现)".to_string(), String::new()),
+        AgentToolArgs::EditFile { path, old_string, new_string, replace_all } => {
+            let old_preview = old_string.lines().take(3).collect::<Vec<_>>().join("\n");
+            let old_suffix = if old_string.lines().count() > 3 { "\n..." } else { "" };
+            (
+                "edit_file",
+                format!("{} (replace_all={})", path, replace_all),
+                format!(
+                    "path: {}\nreplace_all: {}\nold_string:\n{}{}\nnew_string ({} 行):",
+                    path, replace_all, old_preview, old_suffix,
+                    new_string.lines().count().max(1)
+                ),
+            )
+        }
     };
     AgentEvent {
         kind: "tool_call".into(),
