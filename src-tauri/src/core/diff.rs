@@ -19,3 +19,17 @@ pub fn unified_diff(old: &str, new: &str) -> String {
 
     output
 }
+
+#[cfg(test)]
+mod tests {
+    use super::unified_diff;
+
+    #[test]
+    fn diff_separates_non_newline_terminated_changes() {
+        let diff = unified_diff("hello", "hello world");
+
+        assert!(diff.contains("-hello"));
+        assert!(diff.contains("+hello world"));
+        assert!(diff.contains("-hello\n+hello world"));
+    }
+}

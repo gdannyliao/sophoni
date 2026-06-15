@@ -13,4 +13,7 @@ pub mod tools;
 pub mod workspace;
 
 #[cfg(test)]
+mod test_support;
+
+#[cfg(test)]
 mod tests;
