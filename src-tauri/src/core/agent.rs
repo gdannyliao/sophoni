@@ -649,4 +649,200 @@ mod tests {
             .iter()
             .any(|e| e.kind == "error" && e.body.contains("Provider")));
     }
+
+    // ── run_command 端到端（真实 Provider，需联网 + API Key）──
+    // 用 `cargo test --manifest-path src-tauri/Cargo.toml -- --ignored run_command_live`
+    // 运行。默认 ignore，避免污染常规测试与 CI。
+
+    #[tokio::test]
+    #[ignore]
+    async fn run_command_live_invokes_tool_against_real_provider() {
+        use super::super::domain::{AgentConfig, AgentEvent, SystemPrompt};
+        use super::super::provider::OpenAICompatibleProvider;
+        use super::super::tools::ToolDispatcher;
+        use super::{run_agent_task, EventSink};
+
+        let (config, provider_name) = AgentConfig::load().expect("AgentConfig 未配置");
+        eprintln!("使用真实 Provider: {provider_name} / {}", config.model);
+
+        let root = std::env::temp_dir().join(format!("sophoni-live-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("README.md"), "# live\n").unwrap();
+        let _ = std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(&root)
+            .output();
+
+        let provider: Box<dyn super::super::provider::AgentProvider> =
+            Box::new(OpenAICompatibleProvider::new(config));
+        let tools = ToolDispatcher::new(root.clone());
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+
+        struct Collector(std::sync::Mutex<Vec<AgentEvent>>);
+        impl EventSink for Collector {
+            fn emit(&self, event: &AgentEvent) {
+                self.0.lock().unwrap().push(event.clone());
+            }
+        }
+        let sink = Collector(std::sync::Mutex::new(Vec::new()));
+
+        let task = "在工作区跑一次 git status，把命令输出原样告诉我。".to_string();
+        let result = run_agent_task(
+            provider,
+            &tools,
+            &sink,
+            &cancel,
+            SystemPrompt(String::new()),
+            task,
+            vec![],
+        )
+        .await
+        .expect("run_agent_task 出错");
+
+        eprintln!("Agent summary: {}", result.summary);
+
+        let events = sink.0.lock().unwrap();
+        eprintln!("收到 {} 个事件", events.len());
+        for ev in events.iter() {
+            eprintln!("  [{}] {}", ev.kind, ev.title);
+        }
+
+        let invoked_run_command = events
+            .iter()
+            .any(|e| e.kind == "tool_call" && e.title.starts_with("run_command:"));
+        let has_non_error_result = events
+            .iter()
+            .any(|e| e.kind == "tool_result" && !e.body.starts_with("失败"));
+
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert!(invoked_run_command, "Agent 没有调用 run_command 工具");
+        assert!(
+            has_non_error_result,
+            "run_command 没有产生成功结果（可能命令被拒或执行失败）"
+        );
+    }
+
+    // ── 场景 2：失败自纠闭环（真实 Provider）──
+    // 用 `cargo test -- --ignored run_command_self_heal` 运行。
+
+    #[tokio::test]
+    #[ignore]
+    async fn run_command_self_heal_fixes_compile_error_against_real_provider() {
+        use super::super::domain::{AgentConfig, AgentEvent, SystemPrompt};
+        use super::super::provider::OpenAICompatibleProvider;
+        use super::super::tools::ToolDispatcher;
+        use super::{run_agent_task, EventSink};
+
+        let (config, provider_name) = AgentConfig::load().expect("AgentConfig 未配置");
+        eprintln!("使用真实 Provider: {provider_name} / {}", config.model);
+
+        let root = std::env::temp_dir().join(format!("sophoni-heal-{}", uuid::Uuid::new_v4()));
+        let src_dir = root.join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::write(
+            &root.join("Cargo.toml"),
+            "[package]\nname = \"heal_demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[lib]\npath = \"src/lib.rs\"\n",
+        )
+        .unwrap();
+        // 缺少分号 → cargo check 必然报 "expected `;`"。
+        std::fs::write(
+            src_dir.join("lib.rs"),
+            "pub fn add(a: i32, b: i32) -> i32 {\n    let x = a\n    let y = b\n    x + y\n}\n",
+        )
+        .unwrap();
+
+        let provider: Box<dyn super::super::provider::AgentProvider> =
+            Box::new(OpenAICompatibleProvider::new(config));
+        let tools = ToolDispatcher::new(root.clone());
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+
+        struct Collector(std::sync::Mutex<Vec<AgentEvent>>);
+        impl EventSink for Collector {
+            fn emit(&self, event: &AgentEvent) {
+                self.0.lock().unwrap().push(event.clone());
+            }
+        }
+        let sink = Collector(std::sync::Mutex::new(Vec::new()));
+
+        let task = "这个 Rust 工程的 src/lib.rs 有编译错误。请用 cargo check 验证，\
+                    根据报错修正代码，再跑一次 cargo check 确认修复成功。"
+            .to_string();
+        let result = run_agent_task(
+            provider,
+            &tools,
+            &sink,
+            &cancel,
+            SystemPrompt(String::new()),
+            task,
+            vec![],
+        )
+        .await
+        .expect("run_agent_task 出错");
+        eprintln!("Agent summary: {}", result.summary);
+
+        let events = sink.0.lock().unwrap();
+        eprintln!("收到 {} 个事件", events.len());
+
+        let mut check_calls = 0usize;
+        let mut failed_checks = 0usize;
+        let mut successful_checks = 0usize;
+        let mut edit_calls = 0usize;
+        let mut saw_edit = false;
+
+        for ev in events.iter() {
+            eprintln!("  [{}] {}", ev.kind, ev.title);
+            match ev.kind.as_str() {
+                "tool_call" => {
+                    if ev.title.starts_with("run_command:") && ev.title.contains("cargo check") {
+                        check_calls += 1;
+                    } else if ev.title.starts_with("edit_file:") {
+                        edit_calls += 1;
+                        saw_edit = true;
+                    }
+                }
+                "tool_result" => {
+                    let is_check_result = ev.body.contains("cargo check")
+                        || ev.body.contains("error[")
+                        || ev.body.contains("error:")
+                        || ev.body.starts_with("exit code:");
+                    if !is_check_result {
+                        continue;
+                    }
+                    if ev.body.starts_with("失败:") {
+                        failed_checks += 1;
+                    } else if ev.body.contains("exit code: 0") {
+                        successful_checks += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let succeeded_after_edit = successful_checks >= 1
+            && saw_edit
+            && successful_checks + failed_checks >= 2;
+        eprintln!(
+            "诊断: cargo check 调用 {check_calls} 次（成功 {successful_checks}，失败 {failed_checks}），edit_file {edit_calls} 次"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert!(
+            check_calls >= 1,
+            "Agent 没有用 run_command 跑 cargo check"
+        );
+        assert!(edit_calls >= 1, "Agent 没有调用 edit_file 修复代码");
+        assert!(
+            successful_checks >= 1,
+            "cargo check 从未成功，Agent 没能完成修复（可能是模型能力不足）"
+        );
+        assert!(
+            succeeded_after_edit,
+            "未形成'check失败→edit→check成功'闭环：check总次数 {}，成功 {}，edit {}",
+            successful_checks + failed_checks,
+            successful_checks,
+            edit_calls
+        );
+    }
 }
