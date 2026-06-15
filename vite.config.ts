@@ -1,21 +1,42 @@
 import { defineConfig } from "vitest/config";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 
-export default defineConfig({
-  plugins: [svelte()],
+const shared = {
   clearScreen: false,
-  server: {
-    strictPort: true,
-  },
+  server: { strictPort: true },
+  envPrefix: ["VITE_", "TAURI_"],
+};
+
+export default defineConfig({
+  ...shared,
+  plugins: [svelte()],
   resolve: {
-    // Svelte 5 ships separate client/server entries; vitest + jsdom must resolve
-    // the client (browser) build so component `mount` works in tests.
+    // Svelte 5 ships separate client/server entries; vitest + jsdom and the
+    // browser dev server must resolve the client (browser) build.
     conditions: ["browser"],
   },
-  envPrefix: ["VITE_", "TAURI_"],
   test: {
-    environment: "jsdom",
-    globals: true,
-    setupFiles: ["./src/test/setup.ts"],
+    exclude: ["**/node_modules/**", "**/dist/**", ".worktrees/**"],
+    projects: [
+      {
+        plugins: [svelte()],
+        resolve: { conditions: ["browser"] },
+        test: {
+          name: "browser",
+          environment: "jsdom",
+          globals: true,
+          setupFiles: ["./src/test/setup.ts"],
+          include: ["src/**/*.{test,spec}.{js,ts}"],
+        },
+      },
+      {
+        test: {
+          name: "node",
+          environment: "node",
+          globals: true,
+          include: ["scripts/acceptance/**/*.{test,spec}.{js,ts}"],
+        },
+      },
+    ],
   },
 });
