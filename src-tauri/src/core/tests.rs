@@ -459,23 +459,36 @@ use super::domain::AgentConfig;
 
 static HOME_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
+struct HomeEnvGuard {
+    original: Option<String>,
+}
+
+impl HomeEnvGuard {
+    fn set(home: &Path) -> Self {
+        let original = std::env::var("HOME").ok();
+        std::env::set_var("HOME", home);
+        Self { original }
+    }
+}
+
+impl Drop for HomeEnvGuard {
+    fn drop(&mut self) {
+        if let Some(h) = &self.original {
+            std::env::set_var("HOME", h);
+        } else {
+            std::env::remove_var("HOME");
+        }
+    }
+}
+
 fn with_home_dir<T>(home: &Path, f: impl FnOnce() -> T) -> T {
     let _guard = HOME_ENV_LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()
-        .expect("HOME env lock poisoned");
-    let orig_home = std::env::var("HOME").ok();
-    std::env::set_var("HOME", home);
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _home = HomeEnvGuard::set(home);
 
-    let result = f();
-
-    if let Some(h) = orig_home {
-        std::env::set_var("HOME", h);
-    } else {
-        std::env::remove_var("HOME");
-    }
-
-    result
+    f()
 }
 
 #[test]
