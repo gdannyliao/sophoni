@@ -622,16 +622,16 @@ async fn tool_write_outside_root_is_error() {
     assert!(result.is_error);
 }
 
-// ── GlmProvider translation tests ──
+// ── OpenAI translation tests ──
 
 use super::provider::{
-    GlmChoice, GlmFunction, GlmMessage, GlmProvider, GlmResponse, GlmToolCall,
+    OpenAIChoice, OpenAIFunction, OpenAIMessage, OpenAICompatibleProvider, OpenAIResponse, OpenAIToolCall,
 };
 
 #[test]
 fn glm_translates_user_turn_to_message() {
     let turn = super::domain::ConversationTurn::User { content: "hi".into() };
-    let msg = GlmProvider::turn_to_glm_message(&turn);
+    let msg = OpenAICompatibleProvider::turn_to_openai_message(&turn);
     assert_eq!(msg.role, "user");
     assert_eq!(msg.content.as_deref(), Some("hi"));
     assert!(msg.tool_calls.is_none());
@@ -649,7 +649,7 @@ fn glm_translates_tool_turn_to_message() {
             file_change: None,
         },
     };
-    let msg = GlmProvider::turn_to_glm_message(&turn);
+    let msg = OpenAICompatibleProvider::turn_to_openai_message(&turn);
     assert_eq!(msg.role, "tool");
     assert_eq!(msg.tool_call_id.as_deref(), Some("tc-9"));
     assert_eq!(msg.content.as_deref(), Some("file body"));
@@ -657,15 +657,15 @@ fn glm_translates_tool_turn_to_message() {
 
 #[test]
 fn glm_translates_response_with_tool_calls() {
-    let resp = GlmResponse {
-        choices: vec![GlmChoice {
-            message: GlmMessage {
+    let resp = OpenAIResponse {
+        choices: vec![OpenAIChoice {
+            message: OpenAIMessage {
                 role: "assistant".into(),
                 content: None,
-                tool_calls: Some(vec![GlmToolCall {
+                tool_calls: Some(vec![OpenAIToolCall {
                     id: "call-1".into(),
                     kind: "function".into(),
-                    function: GlmFunction {
+                    function: OpenAIFunction {
                         name: "read_file".into(),
                         arguments: "{\"path\":\"README.md\"}".into(),
                     },
@@ -674,7 +674,7 @@ fn glm_translates_response_with_tool_calls() {
             },
         }],
     };
-    let translated = GlmProvider::translate_response(resp).unwrap();
+    let translated = OpenAICompatibleProvider::translate_response(resp).unwrap();
     match translated {
         super::domain::ProviderResponse::ToolCalls(calls) => {
             assert_eq!(calls.len(), 1);
@@ -690,9 +690,9 @@ fn glm_translates_response_with_tool_calls() {
 
 #[test]
 fn glm_translates_response_without_tool_calls_as_final_answer() {
-    let resp = GlmResponse {
-        choices: vec![GlmChoice {
-            message: GlmMessage {
+    let resp = OpenAIResponse {
+        choices: vec![OpenAIChoice {
+            message: OpenAIMessage {
                 role: "assistant".into(),
                 content: Some("all done".into()),
                 tool_calls: None,
@@ -700,7 +700,7 @@ fn glm_translates_response_without_tool_calls_as_final_answer() {
             },
         }],
     };
-    let translated = GlmProvider::translate_response(resp).unwrap();
+    let translated = OpenAICompatibleProvider::translate_response(resp).unwrap();
     match translated {
         super::domain::ProviderResponse::FinalAnswer(t) => assert_eq!(t, "all done"),
         _ => panic!("expected FinalAnswer"),
@@ -1112,15 +1112,15 @@ async fn list_files_respects_depth_limit() {
 
 #[test]
 fn glm_parses_list_files_tool_call() {
-    let resp = super::provider::GlmResponse {
-        choices: vec![super::provider::GlmChoice {
-            message: super::provider::GlmMessage {
+    let resp = super::provider::OpenAIResponse {
+        choices: vec![super::provider::OpenAIChoice {
+            message: super::provider::OpenAIMessage {
                 role: "assistant".into(),
                 content: None,
-                tool_calls: Some(vec![super::provider::GlmToolCall {
+                tool_calls: Some(vec![super::provider::OpenAIToolCall {
                     id: "c1".into(),
                     kind: "function".into(),
-                    function: super::provider::GlmFunction {
+                    function: super::provider::OpenAIFunction {
                         name: "list_files".into(),
                         arguments: r#"{"path":"src","recursive":true}"#.into(),
                     },
@@ -1129,7 +1129,7 @@ fn glm_parses_list_files_tool_call() {
             },
         }],
     };
-    let translated = super::provider::GlmProvider::translate_response(resp).unwrap();
+    let translated = super::provider::OpenAICompatibleProvider::translate_response(resp).unwrap();
     match translated {
         super::domain::ProviderResponse::ToolCalls(calls) => {
             assert_eq!(calls.len(), 1);
@@ -1147,15 +1147,15 @@ fn glm_parses_list_files_tool_call() {
 
 #[test]
 fn glm_parses_grep_tool_call() {
-    let resp = super::provider::GlmResponse {
-        choices: vec![super::provider::GlmChoice {
-            message: super::provider::GlmMessage {
+    let resp = super::provider::OpenAIResponse {
+        choices: vec![super::provider::OpenAIChoice {
+            message: super::provider::OpenAIMessage {
                 role: "assistant".into(),
                 content: None,
-                tool_calls: Some(vec![super::provider::GlmToolCall {
+                tool_calls: Some(vec![super::provider::OpenAIToolCall {
                     id: "c2".into(),
                     kind: "function".into(),
-                    function: super::provider::GlmFunction {
+                    function: super::provider::OpenAIFunction {
                         name: "grep".into(),
                         arguments: r#"{"pattern":"invoke","include":"*.ts"}"#.into(),
                     },
@@ -1164,7 +1164,7 @@ fn glm_parses_grep_tool_call() {
             },
         }],
     };
-    let translated = super::provider::GlmProvider::translate_response(resp).unwrap();
+    let translated = super::provider::OpenAICompatibleProvider::translate_response(resp).unwrap();
     match translated {
         super::domain::ProviderResponse::ToolCalls(calls) => {
             assert_eq!(calls.len(), 1);
@@ -1362,15 +1362,15 @@ async fn edit_file_preserves_curly_quotes_in_file() {
 
 #[test]
 fn glm_parses_edit_file_tool_call() {
-    let resp = super::provider::GlmResponse {
-        choices: vec![super::provider::GlmChoice {
-            message: super::provider::GlmMessage {
+    let resp = super::provider::OpenAIResponse {
+        choices: vec![super::provider::OpenAIChoice {
+            message: super::provider::OpenAIMessage {
                 role: "assistant".into(),
                 content: None,
-                tool_calls: Some(vec![super::provider::GlmToolCall {
+                tool_calls: Some(vec![super::provider::OpenAIToolCall {
                     id: "c1".into(),
                     kind: "function".into(),
-                    function: super::provider::GlmFunction {
+                    function: super::provider::OpenAIFunction {
                         name: "edit_file".into(),
                         arguments: r#"{"path":"a.txt","old_string":"hello","new_string":"world"}"#.into(),
                     },
@@ -1379,7 +1379,7 @@ fn glm_parses_edit_file_tool_call() {
             },
         }],
     };
-    let translated = super::provider::GlmProvider::translate_response(resp).unwrap();
+    let translated = super::provider::OpenAICompatibleProvider::translate_response(resp).unwrap();
     match translated {
         super::domain::ProviderResponse::ToolCalls(calls) => {
             assert_eq!(calls.len(), 1);
@@ -1399,15 +1399,15 @@ fn glm_parses_edit_file_tool_call() {
 
 #[test]
 fn glm_parses_edit_file_with_replace_all() {
-    let resp = super::provider::GlmResponse {
-        choices: vec![super::provider::GlmChoice {
-            message: super::provider::GlmMessage {
+    let resp = super::provider::OpenAIResponse {
+        choices: vec![super::provider::OpenAIChoice {
+            message: super::provider::OpenAIMessage {
                 role: "assistant".into(),
                 content: None,
-                tool_calls: Some(vec![super::provider::GlmToolCall {
+                tool_calls: Some(vec![super::provider::OpenAIToolCall {
                     id: "c2".into(),
                     kind: "function".into(),
-                    function: super::provider::GlmFunction {
+                    function: super::provider::OpenAIFunction {
                         name: "edit_file".into(),
                         arguments: r#"{"path":"a.txt","old_string":"foo","new_string":"bar","replace_all":true}"#.into(),
                     },
@@ -1416,7 +1416,7 @@ fn glm_parses_edit_file_with_replace_all() {
             },
         }],
     };
-    let translated = super::provider::GlmProvider::translate_response(resp).unwrap();
+    let translated = super::provider::OpenAICompatibleProvider::translate_response(resp).unwrap();
     match translated {
         super::domain::ProviderResponse::ToolCalls(calls) => {
             match &calls[0].arguments {
@@ -1432,15 +1432,15 @@ fn glm_parses_edit_file_with_replace_all() {
 
 #[test]
 fn glm_parses_edit_file_missing_field_is_error() {
-    let resp = super::provider::GlmResponse {
-        choices: vec![super::provider::GlmChoice {
-            message: super::provider::GlmMessage {
+    let resp = super::provider::OpenAIResponse {
+        choices: vec![super::provider::OpenAIChoice {
+            message: super::provider::OpenAIMessage {
                 role: "assistant".into(),
                 content: None,
-                tool_calls: Some(vec![super::provider::GlmToolCall {
+                tool_calls: Some(vec![super::provider::OpenAIToolCall {
                     id: "c3".into(),
                     kind: "function".into(),
-                    function: super::provider::GlmFunction {
+                    function: super::provider::OpenAIFunction {
                         name: "edit_file".into(),
                         arguments: r#"{"path":"a.txt"}"#.into(),
                     },
@@ -1449,6 +1449,6 @@ fn glm_parses_edit_file_missing_field_is_error() {
             },
         }],
     };
-    let result = super::provider::GlmProvider::translate_response(resp);
+    let result = super::provider::OpenAICompatibleProvider::translate_response(resp);
     assert!(result.is_err());
 }

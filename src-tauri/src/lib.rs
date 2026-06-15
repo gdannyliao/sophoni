@@ -8,7 +8,7 @@ use core::agent::{run_agent_task as run_agent_task_inner, run_mock_agent_task, A
 use core::command_risk::{classify_command, CommandRisk};
 use core::domain::{AgentConfig, AgentEvent, ConfigStatus, SystemPrompt};
 use core::errors::AppError;
-use core::provider::GlmProvider;
+use core::provider::OpenAICompatibleProvider;
 use core::tools::ToolDispatcher;
 use tauri::{AppHandle, Emitter, State};
 
@@ -59,7 +59,7 @@ async fn run_agent_task(
     state.cancel.store(false, Ordering::Relaxed);
 
     let config = AgentConfig::load()?;
-    let provider = GlmProvider::new(config);
+    let provider = OpenAICompatibleProvider::new(config);
     let tools = ToolDispatcher::new(PathBuf::from(&workspace_root));
     let sink = AppEventSink { app };
 
