@@ -1,5 +1,6 @@
 .superpowers/
 .worktrees/
+.sophoni/
 
 # 实施计划 / task breakdown 文档不入仓(见 AGENTS.md)
 docs/superpowers/plans/

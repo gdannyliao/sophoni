@@ -6,8 +6,8 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use super::domain::{
-    AgentEvent, AgentToolArgs, AgentToolCall, AgentToolResult, AgentToolSchema,
-    ChangeKind, ConversationTurn, FileChange, ProviderResponse, SystemPrompt,
+    AgentEvent, AgentToolArgs, AgentToolCall, AgentToolResult, AgentToolSchema, ChangeKind,
+    ConversationTurn, FileChange, ProviderResponse, SystemPrompt,
 };
 use super::errors::AppResult;
 use super::provider::AgentProvider;
@@ -30,6 +30,9 @@ const SYSTEM_PROMPT: &str = "你是桌面工作区 Agent。只能操作工作区
 - read_file：读取指定文件内容。
 - write_file：写入整个文件（新建或大改时用）。
 - edit_file：精确替换文件中的一段文本（小改时用，比 write_file 省 token）。
+- list_acceptance_runs：列出最近验收运行 ID。
+- read_acceptance_report：读取验收报告 report.json，可不传 run_id 读取最新一次。
+- read_runtime_log：读取验收运行日志的尾部内容，可不传 run_id 读取最新一次。
 
 工作方式：
 1. 不确定路径时，先 list_files 或 grep 探索。
@@ -37,8 +40,9 @@ const SYSTEM_PROMPT: &str = "你是桌面工作区 Agent。只能操作工作区
 3. 小改动优先用 edit_file（给出要替换的原文和新文本），大改动或新建文件用 write_file。
 4. edit_file 的 old_string 必须与文件内容精确匹配（含缩进和空格）。
 5. 当用户要求替换「所有」或「全部」时，用 edit_file 的 replace_all=true，一次替换所有匹配，不要分多次单独替换。
-6. 不要在回复里直接给文件内容，通过工具操作。
-7. 完成任务后给出简短总结。";
+6. 验收时优先用 read_acceptance_report 看 report.json，重点检查 ok 和 failureSummary；失败或信息不足时再用 read_runtime_log 查看相关日志。
+7. 不要在回复里直接给文件内容，通过工具操作。
+8. 完成任务后给出简短总结。";
 
 const MAX_ROUNDS: usize = 12;
 const PER_ROUND_TIMEOUT: Duration = Duration::from_secs(30);
@@ -91,7 +95,11 @@ pub async fn run_agent_task(
             }
             Ok(Ok(ProviderResponse::ToolCalls(calls))) => calls,
             Ok(Err(e)) => {
-                push(&mut events, sink, error_event(&format!("Provider 错误: {e}")));
+                push(
+                    &mut events,
+                    sink,
+                    error_event(&format!("Provider 错误: {e}")),
+                );
                 break;
             }
             Err(_elapsed) => {
@@ -125,9 +133,7 @@ pub async fn run_agent_task(
 
     // If we exited the loop without a FinalAnswer and without an explicit
     // error event, surface the max-rounds stop as an error so the user sees why.
-    if !events.iter().any(|e| e.kind == "summary")
-        && !events.iter().any(|e| e.kind == "error")
-    {
+    if !events.iter().any(|e| e.kind == "summary") && !events.iter().any(|e| e.kind == "error") {
         push(&mut events, sink, error_event("达到最大轮次(12),已停止"));
     }
 
@@ -138,7 +144,11 @@ pub async fn run_agent_task(
         .map(|e| e.body.clone())
         .unwrap_or_else(|| "任务未正常完成,以上是已执行的步骤。".into());
 
-    Ok(AgentTaskResult { summary, events, file_changes })
+    Ok(AgentTaskResult {
+        summary,
+        events,
+        file_changes,
+    })
 }
 
 fn push(events: &mut Vec<AgentEvent>, sink: &dyn EventSink, event: AgentEvent) {
@@ -209,28 +219,69 @@ fn tool_schemas() -> Vec<AgentToolSchema> {
                 "required": ["path", "old_string", "new_string"]
             }),
         },
+        AgentToolSchema {
+            name: "read_acceptance_report",
+            description: "读取验收运行的 report.json。默认读取最新一次验收运行；用于判断 ok 和 failureSummary。",
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "run_id": { "type": "string", "description": "验收运行 ID；省略时读取最新一次" }
+                }
+            }),
+        },
+        AgentToolSchema {
+            name: "read_runtime_log",
+            description: "读取验收运行日志尾部内容。默认读取最新一次验收运行；max_lines 默认由模型调用方可省略，建议先读少量行。",
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "run_id": { "type": "string", "description": "验收运行 ID；省略时读取最新一次" },
+                    "file_name": { "type": "string", "description": "日志文件名，例如 runtime.log" },
+                    "max_lines": { "type": "integer", "minimum": 1, "maximum": 200, "description": "读取尾部行数，默认 80" }
+                },
+                "required": ["file_name"]
+            }),
+        },
+        AgentToolSchema {
+            name: "list_acceptance_runs",
+            description: "列出最近验收运行 ID。limit 会限制到 1 到 20。",
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 20, "description": "返回条数，默认 5" }
+                }
+            }),
+        },
     ]
 }
 
 fn error_event(body: &str) -> AgentEvent {
-    AgentEvent { kind: "error".into(), title: "错误".into(), body: body.into() }
+    AgentEvent {
+        kind: "error".into(),
+        title: "错误".into(),
+        body: body.into(),
+    }
 }
 
 fn summary_event(body: &str) -> AgentEvent {
-    AgentEvent { kind: "summary".into(), title: "任务完成".into(), body: body.into() }
+    AgentEvent {
+        kind: "summary".into(),
+        title: "任务完成".into(),
+        body: body.into(),
+    }
 }
 
 fn tool_call_event(call: &AgentToolCall) -> AgentEvent {
     let (label, detail, body) = match &call.arguments {
-        AgentToolArgs::Read { path } => (
-            "read_file",
-            path.clone(),
-            format!("path: {path}"),
-        ),
+        AgentToolArgs::Read { path } => ("read_file", path.clone(), format!("path: {path}")),
         AgentToolArgs::Write { path, content } => (
             "write_file",
             path.clone(),
-            format!("path: {path}\ncontent ({} 行):\n{}", content.lines().count().max(1), content),
+            format!(
+                "path: {path}\ncontent ({} 行):\n{}",
+                content.lines().count().max(1),
+                content
+            ),
         ),
         AgentToolArgs::ListFiles { path, recursive } => {
             let p = path.as_deref().unwrap_or(".");
@@ -240,7 +291,11 @@ fn tool_call_event(call: &AgentToolCall) -> AgentEvent {
                 format!("path: {p}\nrecursive: {recursive}"),
             )
         }
-        AgentToolArgs::Grep { pattern, path, include } => {
+        AgentToolArgs::Grep {
+            pattern,
+            path,
+            include,
+        } => {
             let p = path.as_deref().unwrap_or(".");
             let inc = include.as_deref().unwrap_or("(无)");
             (
@@ -249,19 +304,56 @@ fn tool_call_event(call: &AgentToolCall) -> AgentEvent {
                 format!("pattern: {pattern}\npath: {p}\ninclude: {inc}"),
             )
         }
-        AgentToolArgs::EditFile { path, old_string, new_string, replace_all } => {
+        AgentToolArgs::EditFile {
+            path,
+            old_string,
+            new_string,
+            replace_all,
+        } => {
             let old_preview = old_string.lines().take(3).collect::<Vec<_>>().join("\n");
-            let old_suffix = if old_string.lines().count() > 3 { "\n..." } else { "" };
+            let old_suffix = if old_string.lines().count() > 3 {
+                "\n..."
+            } else {
+                ""
+            };
             (
                 "edit_file",
                 format!("{} (replace_all={})", path, replace_all),
                 format!(
                     "path: {}\nreplace_all: {}\nold_string:\n{}{}\nnew_string ({} 行):",
-                    path, replace_all, old_preview, old_suffix,
+                    path,
+                    replace_all,
+                    old_preview,
+                    old_suffix,
                     new_string.lines().count().max(1)
                 ),
             )
         }
+        AgentToolArgs::ReadAcceptanceReport { run_id } => {
+            let id = run_id.as_deref().unwrap_or("latest");
+            (
+                "read_acceptance_report",
+                id.to_string(),
+                format!("run_id: {id}"),
+            )
+        }
+        AgentToolArgs::ReadRuntimeLog {
+            run_id,
+            file_name,
+            max_lines,
+        } => {
+            let id = run_id.as_deref().unwrap_or("latest");
+            (
+                "read_runtime_log",
+                format!("{file_name} ({id}, max_lines={max_lines})"),
+                format!("run_id: {id}\nfile_name: {file_name}\nmax_lines: {max_lines}"),
+            )
+        }
+        AgentToolArgs::ListAcceptanceRuns { limit } => (
+            "list_acceptance_runs",
+            format!("limit={limit}"),
+            format!("limit: {limit}"),
+        ),
     };
     AgentEvent {
         kind: "tool_call".into(),
@@ -317,9 +409,21 @@ pub fn run_mock_agent_task(workspace_root: PathBuf, prompt: &str) -> AppResult<A
     Ok(AgentTaskResult {
         summary: "mock Agent 已完成一次文件写入任务。".to_string(),
         events: vec![
-            AgentEvent { kind: "thought".into(), title: "理解任务".into(), body: prompt.to_string() },
-            AgentEvent { kind: "tool".into(), title: "写入 README.md".into(), body: "已写入 README.md 并生成 diff。".into() },
-            AgentEvent { kind: "summary".into(), title: "任务完成".into(), body: "mock Agent 已生成可展示的文件变更。".into() },
+            AgentEvent {
+                kind: "thought".into(),
+                title: "理解任务".into(),
+                body: prompt.to_string(),
+            },
+            AgentEvent {
+                kind: "tool".into(),
+                title: "写入 README.md".into(),
+                body: "已写入 README.md 并生成 diff。".into(),
+            },
+            AgentEvent {
+                kind: "summary".into(),
+                title: "任务完成".into(),
+                body: "mock Agent 已生成可展示的文件变更。".into(),
+            },
         ],
         file_changes: vec![change],
     })

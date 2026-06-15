@@ -97,7 +97,9 @@ pub struct AgentEvent {
 
 #[derive(Debug, Clone)]
 pub enum ConversationTurn {
-    User { content: String },
+    User {
+        content: String,
+    },
     Assistant {
         content: Option<String>,
         tool_calls: Vec<AgentToolCall>,
@@ -118,19 +120,45 @@ pub enum AgentToolName {
     ListFiles,
     Grep,
     EditFile,
+    ReadAcceptanceReport,
+    ReadRuntimeLog,
+    ListAcceptanceRuns,
 }
 
 #[derive(Debug, Clone)]
 pub enum AgentToolArgs {
-    Read { path: String },
-    Write { path: String, content: String },
-    ListFiles { path: Option<String>, recursive: bool },
-    Grep { pattern: String, path: Option<String>, include: Option<String> },
+    Read {
+        path: String,
+    },
+    Write {
+        path: String,
+        content: String,
+    },
+    ListFiles {
+        path: Option<String>,
+        recursive: bool,
+    },
+    Grep {
+        pattern: String,
+        path: Option<String>,
+        include: Option<String>,
+    },
     EditFile {
         path: String,
         old_string: String,
         new_string: String,
         replace_all: bool,
+    },
+    ReadAcceptanceReport {
+        run_id: Option<String>,
+    },
+    ReadRuntimeLog {
+        run_id: Option<String>,
+        file_name: String,
+        max_lines: usize,
+    },
+    ListAcceptanceRuns {
+        limit: usize,
     },
 }
 

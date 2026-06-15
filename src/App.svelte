@@ -43,7 +43,7 @@
   }
 </script>
 
-<div class="app-shell">
+<div class="app-shell" data-testid="app-shell">
   <Sidebar />
   <Conversation {events} {summary} bind:prompt {running} onRun={runDemo} onCancel={cancel} />
   <ContextPanel {fileChanges} />

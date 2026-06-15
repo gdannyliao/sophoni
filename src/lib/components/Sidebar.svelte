@@ -1,4 +1,4 @@
-<aside class="sidebar" aria-label="工作区与会话">
+<aside class="sidebar" aria-label="工作区与会话" data-testid="sidebar">
   <div class="brand">Sophoni</div>
   <section>
     <h2>工作区</h2>
