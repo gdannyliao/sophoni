@@ -1068,3 +1068,42 @@ async fn grep_outside_root_is_error() {
     let _ = std::fs::remove_dir_all(&root);
     assert!(result.is_error);
 }
+
+// ── 搜索边界测试 ──
+
+#[cfg(unix)]
+#[tokio::test]
+async fn list_files_does_not_follow_symlink_dirs() {
+    use std::os::unix::fs::symlink;
+
+    let root = std::env::temp_dir().join(format!("sophoni-sym-{}", uuid::Uuid::new_v4()));
+    let outside = std::env::temp_dir().join(format!("sophoni-out-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("secret.txt"), "x").unwrap();
+    symlink(&outside, root.join("link")).unwrap();
+
+    let tools = super::tools::ToolDispatcher::new(root.clone());
+    let result = tools.dispatch(&list_call(None, true)).await.unwrap();
+
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&outside);
+    assert!(!result.content.contains("secret.txt"));
+}
+
+#[tokio::test]
+async fn list_files_respects_depth_limit() {
+    let root = std::env::temp_dir().join(format!("sophoni-deep-{}", uuid::Uuid::new_v4()));
+    let mut deep = root.clone();
+    for i in 0..12 {
+        deep = deep.join(format!("d{i}"));
+    }
+    std::fs::create_dir_all(&deep).unwrap();
+    std::fs::write(deep.join("leaf.txt"), "x").unwrap();
+
+    let tools = super::tools::ToolDispatcher::new(root.clone());
+    let result = tools.dispatch(&list_call(None, true)).await.unwrap();
+
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(!result.content.contains("leaf.txt"));
+}
