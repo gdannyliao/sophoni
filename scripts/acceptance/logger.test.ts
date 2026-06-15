@@ -41,4 +41,19 @@ describe("acceptance logger", () => {
     expect(readFileSync(join(logger.runDir, "stdout.log"), "utf8")).toContain("hello stdout");
     expect(readFileSync(join(logger.runDir, "stderr.log"), "utf8")).toContain("hello stderr");
   });
+
+  it("uses unique run directories for repeated loggers in the same second", () => {
+    const root = join(process.cwd(), ".tmp-acceptance-collision");
+    roots.push(root);
+    const now = () => new Date("2026-06-15T00:00:00.000Z");
+
+    const first = createAcceptanceLogger({ root, now });
+    first.info("accept", "第一次运行");
+    const second = createAcceptanceLogger({ root, now });
+
+    expect(first.runDir).not.toBe(second.runDir);
+    expect(first.runDir.endsWith(".tmp-acceptance-collision/runs/20260615-000000")).toBe(true);
+    expect(second.runDir.endsWith(".tmp-acceptance-collision/runs/20260615-000000-1")).toBe(true);
+    expect(readFileSync(first.eventsPath, "utf8")).toContain("第一次运行");
+  });
 });
