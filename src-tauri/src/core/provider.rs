@@ -149,7 +149,15 @@ impl GlmProvider {
                 "grep",
                 serde_json::json!({ "pattern": pattern, "path": path, "include": include }),
             ),
-            AgentToolArgs::EditFile { .. } => ("edit_file", serde_json::json!({})),
+            AgentToolArgs::EditFile { path, old_string, new_string, replace_all } => (
+                "edit_file",
+                serde_json::json!({
+                    "path": path,
+                    "old_string": old_string,
+                    "new_string": new_string,
+                    "replace_all": replace_all
+                }),
+            ),
         };
         GlmToolCall {
             id: call.id.clone(),
@@ -242,7 +250,23 @@ impl GlmProvider {
                 AgentToolArgs::Grep { pattern, path, include }
             }
             AgentToolName::EditFile => {
-                return Err(AppError::Provider("edit_file not yet implemented".into()));
+                let path = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AppError::Provider("edit_file missing path".into()))?
+                    .to_string();
+                let old_string = args
+                    .get("old_string")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AppError::Provider("edit_file missing old_string".into()))?
+                    .to_string();
+                let new_string = args
+                    .get("new_string")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AppError::Provider("edit_file missing new_string".into()))?
+                    .to_string();
+                let replace_all = args.get("replace_all").and_then(|v| v.as_bool()).unwrap_or(false);
+                AgentToolArgs::EditFile { path, old_string, new_string, replace_all }
             }
         };
         Ok(AgentToolCall { id: gtc.id, name, arguments })

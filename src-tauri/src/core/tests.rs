@@ -1357,3 +1357,98 @@ async fn edit_file_preserves_curly_quotes_in_file() {
     assert!(!result.is_error);
     assert_eq!(written, "let x = \u{201C}world\u{201D};\n");
 }
+
+// ── edit_file 翻译测试 ──
+
+#[test]
+fn glm_parses_edit_file_tool_call() {
+    let resp = super::provider::GlmResponse {
+        choices: vec![super::provider::GlmChoice {
+            message: super::provider::GlmMessage {
+                role: "assistant".into(),
+                content: None,
+                tool_calls: Some(vec![super::provider::GlmToolCall {
+                    id: "c1".into(),
+                    kind: "function".into(),
+                    function: super::provider::GlmFunction {
+                        name: "edit_file".into(),
+                        arguments: r#"{"path":"a.txt","old_string":"hello","new_string":"world"}"#.into(),
+                    },
+                }]),
+                tool_call_id: None,
+            },
+        }],
+    };
+    let translated = super::provider::GlmProvider::translate_response(resp).unwrap();
+    match translated {
+        super::domain::ProviderResponse::ToolCalls(calls) => {
+            assert_eq!(calls.len(), 1);
+            match &calls[0].arguments {
+                super::domain::AgentToolArgs::EditFile { path, old_string, new_string, replace_all } => {
+                    assert_eq!(path, "a.txt");
+                    assert_eq!(old_string, "hello");
+                    assert_eq!(new_string, "world");
+                    assert!(!replace_all);
+                }
+                _ => panic!("expected EditFile args"),
+            }
+        }
+        _ => panic!("expected ToolCalls"),
+    }
+}
+
+#[test]
+fn glm_parses_edit_file_with_replace_all() {
+    let resp = super::provider::GlmResponse {
+        choices: vec![super::provider::GlmChoice {
+            message: super::provider::GlmMessage {
+                role: "assistant".into(),
+                content: None,
+                tool_calls: Some(vec![super::provider::GlmToolCall {
+                    id: "c2".into(),
+                    kind: "function".into(),
+                    function: super::provider::GlmFunction {
+                        name: "edit_file".into(),
+                        arguments: r#"{"path":"a.txt","old_string":"foo","new_string":"bar","replace_all":true}"#.into(),
+                    },
+                }]),
+                tool_call_id: None,
+            },
+        }],
+    };
+    let translated = super::provider::GlmProvider::translate_response(resp).unwrap();
+    match translated {
+        super::domain::ProviderResponse::ToolCalls(calls) => {
+            match &calls[0].arguments {
+                super::domain::AgentToolArgs::EditFile { replace_all, .. } => {
+                    assert!(*replace_all);
+                }
+                _ => panic!("expected EditFile args"),
+            }
+        }
+        _ => panic!("expected ToolCalls"),
+    }
+}
+
+#[test]
+fn glm_parses_edit_file_missing_field_is_error() {
+    let resp = super::provider::GlmResponse {
+        choices: vec![super::provider::GlmChoice {
+            message: super::provider::GlmMessage {
+                role: "assistant".into(),
+                content: None,
+                tool_calls: Some(vec![super::provider::GlmToolCall {
+                    id: "c3".into(),
+                    kind: "function".into(),
+                    function: super::provider::GlmFunction {
+                        name: "edit_file".into(),
+                        arguments: r#"{"path":"a.txt"}"#.into(),
+                    },
+                }]),
+                tool_call_id: None,
+            },
+        }],
+    };
+    let result = super::provider::GlmProvider::translate_response(resp);
+    assert!(result.is_err());
+}
