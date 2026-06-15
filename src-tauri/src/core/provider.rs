@@ -12,6 +12,24 @@ const READ_RUNTIME_LOG_MAX_LINES: u64 = 200;
 const LIST_ACCEPTANCE_RUNS_DEFAULT_LIMIT: usize = 5;
 const LIST_ACCEPTANCE_RUNS_MAX_LIMIT: u64 = 20;
 
+/// 从工具参数 JSON 取必填字符串字段，缺失则返回错误（错误消息含工具名）。
+fn req_str(args: &serde_json::Value, key: &str, tool: &str) -> AppResult<String> {
+    args.get(key)
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .ok_or_else(|| AppError::Provider(format!("{tool} missing {key}")))
+}
+
+/// 从工具参数 JSON 取可选字符串字段，缺失返回 None。
+fn opt_str(args: &serde_json::Value, key: &str) -> Option<String> {
+    args.get(key).and_then(|v| v.as_str()).map(String::from)
+}
+
+/// 从工具参数 JSON 取可选布尔字段，缺失默认 false。
+fn opt_bool(args: &serde_json::Value, key: &str) -> bool {
+    args.get(key).and_then(|v| v.as_bool()).unwrap_or(false)
+}
+
 /// Model-agnostic provider contract. Implementations (OpenAICompatibleProvider, future
 /// OpenAI/Claude providers) translate domain types to/from their wire format.
 #[async_trait]
@@ -270,47 +288,26 @@ impl OpenAICompatibleProvider {
         };
         let args: serde_json::Value = serde_json::from_str(&gtc.function.arguments)
             .map_err(|e| AppError::Provider(format!("invalid tool arguments: {e}")))?;
+        let tool = gtc.function.name.as_str();
         let arguments = match name {
             AgentToolName::ReadFile => {
-                let path = args
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| AppError::Provider("read_file missing path".into()))?
-                    .to_string();
+                let path = req_str(&args, "path", tool)?;
                 AgentToolArgs::Read { path }
             }
             AgentToolName::WriteFile => {
-                let path = args
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| AppError::Provider("write_file missing path".into()))?
-                    .to_string();
-                let content = args
-                    .get("content")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| AppError::Provider("write_file missing content".into()))?
-                    .to_string();
+                let path = req_str(&args, "path", tool)?;
+                let content = req_str(&args, "content", tool)?;
                 AgentToolArgs::Write { path, content }
             }
             AgentToolName::ListFiles => {
-                let path = args.get("path").and_then(|v| v.as_str()).map(String::from);
-                let recursive = args
-                    .get("recursive")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
+                let path = opt_str(&args, "path");
+                let recursive = opt_bool(&args, "recursive");
                 AgentToolArgs::ListFiles { path, recursive }
             }
             AgentToolName::Grep => {
-                let pattern = args
-                    .get("pattern")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| AppError::Provider("grep missing pattern".into()))?
-                    .to_string();
-                let path = args.get("path").and_then(|v| v.as_str()).map(String::from);
-                let include = args
-                    .get("include")
-                    .and_then(|v| v.as_str())
-                    .map(String::from);
+                let pattern = req_str(&args, "pattern", tool)?;
+                let path = opt_str(&args, "path");
+                let include = opt_str(&args, "include");
                 AgentToolArgs::Grep {
                     pattern,
                     path,
@@ -318,25 +315,10 @@ impl OpenAICompatibleProvider {
                 }
             }
             AgentToolName::EditFile => {
-                let path = args
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| AppError::Provider("edit_file missing path".into()))?
-                    .to_string();
-                let old_string = args
-                    .get("old_string")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| AppError::Provider("edit_file missing old_string".into()))?
-                    .to_string();
-                let new_string = args
-                    .get("new_string")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| AppError::Provider("edit_file missing new_string".into()))?
-                    .to_string();
-                let replace_all = args
-                    .get("replace_all")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
+                let path = req_str(&args, "path", tool)?;
+                let old_string = req_str(&args, "old_string", tool)?;
+                let new_string = req_str(&args, "new_string", tool)?;
+                let replace_all = opt_bool(&args, "replace_all");
                 AgentToolArgs::EditFile {
                     path,
                     old_string,
@@ -345,22 +327,12 @@ impl OpenAICompatibleProvider {
                 }
             }
             AgentToolName::ReadAcceptanceReport => {
-                let run_id = args
-                    .get("run_id")
-                    .and_then(|v| v.as_str())
-                    .map(String::from);
+                let run_id = opt_str(&args, "run_id");
                 AgentToolArgs::ReadAcceptanceReport { run_id }
             }
             AgentToolName::ReadRuntimeLog => {
-                let run_id = args
-                    .get("run_id")
-                    .and_then(|v| v.as_str())
-                    .map(String::from);
-                let file_name = args
-                    .get("file_name")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| AppError::Provider("read_runtime_log missing file_name".into()))?
-                    .to_string();
+                let run_id = opt_str(&args, "run_id");
+                let file_name = req_str(&args, "file_name", tool)?;
                 let max_lines = args
                     .get("max_lines")
                     .and_then(|v| v.as_u64())
@@ -381,11 +353,7 @@ impl OpenAICompatibleProvider {
                 AgentToolArgs::ListAcceptanceRuns { limit }
             }
             AgentToolName::RunCommand => {
-                let command = args
-                    .get("command")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| AppError::Provider("run_command missing command".into()))?
-                    .to_string();
+                let command = req_str(&args, "command", tool)?;
                 AgentToolArgs::RunCommand { command }
             }
         };
