@@ -27,7 +27,7 @@
 
 固定验收命令建议命名为 `pnpm accept`。它负责执行稳定基线，包括类型检查、前端测试、Rust 测试、Web 启动检查和浏览器级 UI 验收。每次运行会创建独立运行目录，写入中间日志、最终报告和必要截图。
 
-Agent 后续可以通过工具读取最近一次或指定运行目录的 `report.json` 与 `events.log`，根据结构化字段判断是否通过，并在失败时读取失败阶段对应日志继续修复。
+首版 Agent 工具只做只读观测：读取最近一次或指定运行目录的 `report.json` 与 `events.log`，根据结构化字段判断是否通过，并在失败时读取失败阶段对应日志继续修复。触发验收和任意命令执行留到后续受限命令工具。
 
 ## 运行目录
 
@@ -42,7 +42,7 @@ Agent 后续可以通过工具读取最近一次或指定运行目录的 `report
   browser.png
 ```
 
-`.sophoni/runs/` 应被 Git 忽略。每次验收创建独立目录，避免覆盖历史证据。
+`.sophoni/` 应被 Git 忽略。每次验收创建独立目录，避免覆盖历史证据。
 
 ## 报告格式
 
@@ -107,23 +107,22 @@ Agent 后续可以通过工具读取最近一次或指定运行目录的 `report
 
 ## Tauri 健康检查
 
-首版不做完整桌面交互自动化。Tauri 侧先执行构建或测试健康检查：
+首版不做完整桌面交互自动化。Tauri 侧执行测试健康检查：
 
 1. `cargo test --manifest-path src-tauri/Cargo.toml`
-2. 必要时增加 `pnpm tauri build --debug` 或轻量启动检查
-3. 记录构建和启动日志中的错误摘要
+2. 记录测试日志中的错误摘要
 
-这样能覆盖 Rust Core Runtime 和 Tauri 配置的基础健康，不阻塞 Web UI 验收闭环。
+这样能覆盖 Rust Core Runtime 的基础健康，不阻塞 Web UI 验收闭环。`pnpm tauri build --debug` 和桌面启动自动化作为后续增强，不进入首版完成标准。
 
 ## Agent 工具扩展
 
-后续给 Agent 增加只读观测工具：
+首版给 Agent 增加只读观测工具：
 
 1. `read_acceptance_report`：读取最近一次或指定运行目录的 `report.json`。
 2. `read_runtime_log`：读取指定日志文件，可限制最大行数。
 3. `list_acceptance_runs`：列出最近 N 次验收运行。
 
-如果后续需要让 Agent 主动触发验收，可以增加受限工具：
+后续如果需要让 Agent 主动触发验收，可以增加受限工具：
 
 1. `run_acceptance`：只允许执行固定验收入口。
 2. `run_safe_command`：只允许执行白名单命令，例如 `pnpm check`、`pnpm test`、`cargo test`。
@@ -152,4 +151,5 @@ Agent 后续可以通过工具读取最近一次或指定运行目录的 `report
 3. `events.log` 能展示人类可读的中间状态。
 4. Web 验收能保存截图并记录控制台错误。
 5. 验收产物目录不入仓。
-6. README 增加简短使用说明。
+6. Agent 可以通过只读观测工具读取验收报告和日志。
+7. README 增加简短使用说明。
