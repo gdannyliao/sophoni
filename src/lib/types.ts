@@ -23,5 +23,6 @@ export interface AgentTaskResult {
 
 export interface ConfigStatus {
   configured: boolean;
+  provider: string;
   model: string;
 }
