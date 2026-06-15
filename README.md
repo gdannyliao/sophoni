@@ -31,6 +31,19 @@ pnpm test
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
+运行自动验收：
+
+```bash
+pnpm accept
+```
+
+`pnpm accept` 会执行类型检查、前端测试、Rust 测试，并启动 Web 入口做浏览器级 UI 验收。每次运行都会生成 `.sophoni/runs/<timestamp>/`，其中：
+
+- `report.json`：结构化验收报告，Agent 优先读取 `ok` 和 `failureSummary` 判断状态。
+- `events.log`：人类可读的阶段日志。
+- `stdout.log` / `stderr.log`：完整命令输出。
+- `browser.png`：Web UI 验收截图。
+
 ## 配置 GLM API Key
 
 Agent 循环通过 GLM API 调用模型。创建 `~/.config/sophoni/config.toml`：
