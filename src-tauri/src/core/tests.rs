@@ -1107,3 +1107,76 @@ async fn list_files_respects_depth_limit() {
     std::fs::remove_dir_all(&root).unwrap();
     assert!(!result.content.contains("leaf.txt"));
 }
+
+// ── 搜索工具翻译测试 ──
+
+#[test]
+fn glm_parses_list_files_tool_call() {
+    let resp = super::provider::GlmResponse {
+        choices: vec![super::provider::GlmChoice {
+            message: super::provider::GlmMessage {
+                role: "assistant".into(),
+                content: None,
+                tool_calls: Some(vec![super::provider::GlmToolCall {
+                    id: "c1".into(),
+                    kind: "function".into(),
+                    function: super::provider::GlmFunction {
+                        name: "list_files".into(),
+                        arguments: r#"{"path":"src","recursive":true}"#.into(),
+                    },
+                }]),
+                tool_call_id: None,
+            },
+        }],
+    };
+    let translated = super::provider::GlmProvider::translate_response(resp).unwrap();
+    match translated {
+        super::domain::ProviderResponse::ToolCalls(calls) => {
+            assert_eq!(calls.len(), 1);
+            match &calls[0].arguments {
+                super::domain::AgentToolArgs::ListFiles { path, recursive } => {
+                    assert_eq!(path.as_deref(), Some("src"));
+                    assert!(*recursive);
+                }
+                _ => panic!("expected ListFiles args"),
+            }
+        }
+        _ => panic!("expected ToolCalls"),
+    }
+}
+
+#[test]
+fn glm_parses_grep_tool_call() {
+    let resp = super::provider::GlmResponse {
+        choices: vec![super::provider::GlmChoice {
+            message: super::provider::GlmMessage {
+                role: "assistant".into(),
+                content: None,
+                tool_calls: Some(vec![super::provider::GlmToolCall {
+                    id: "c2".into(),
+                    kind: "function".into(),
+                    function: super::provider::GlmFunction {
+                        name: "grep".into(),
+                        arguments: r#"{"pattern":"invoke","include":"*.ts"}"#.into(),
+                    },
+                }]),
+                tool_call_id: None,
+            },
+        }],
+    };
+    let translated = super::provider::GlmProvider::translate_response(resp).unwrap();
+    match translated {
+        super::domain::ProviderResponse::ToolCalls(calls) => {
+            assert_eq!(calls.len(), 1);
+            match &calls[0].arguments {
+                super::domain::AgentToolArgs::Grep { pattern, path, include } => {
+                    assert_eq!(pattern, "invoke");
+                    assert!(path.is_none());
+                    assert_eq!(include.as_deref(), Some("*.ts"));
+                }
+                _ => panic!("expected Grep args"),
+            }
+        }
+        _ => panic!("expected ToolCalls"),
+    }
+}

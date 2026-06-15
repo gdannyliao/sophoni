@@ -141,9 +141,14 @@ impl GlmProvider {
                 "write_file",
                 serde_json::json!({ "path": path, "content": content }),
             ),
-            AgentToolArgs::ListFiles { .. } | AgentToolArgs::Grep { .. } => {
-                ("unknown", serde_json::json!({}))
-            }
+            AgentToolArgs::ListFiles { path, recursive } => (
+                "list_files",
+                serde_json::json!({ "path": path, "recursive": recursive }),
+            ),
+            AgentToolArgs::Grep { pattern, path, include } => (
+                "grep",
+                serde_json::json!({ "pattern": pattern, "path": path, "include": include }),
+            ),
         };
         GlmToolCall {
             id: call.id.clone(),
@@ -191,6 +196,8 @@ impl GlmProvider {
         let name = match gtc.function.name.as_str() {
             "read_file" => AgentToolName::ReadFile,
             "write_file" => AgentToolName::WriteFile,
+            "list_files" => AgentToolName::ListFiles,
+            "grep" => AgentToolName::Grep,
             other => return Err(AppError::Provider(format!("unknown tool: {other}"))),
         };
         let args: serde_json::Value = serde_json::from_str(&gtc.function.arguments)
@@ -217,8 +224,20 @@ impl GlmProvider {
                     .to_string();
                 AgentToolArgs::Write { path, content }
             }
-            AgentToolName::ListFiles | AgentToolName::Grep => {
-                return Err(AppError::Provider("search tools not yet implemented".into()));
+            AgentToolName::ListFiles => {
+                let path = args.get("path").and_then(|v| v.as_str()).map(String::from);
+                let recursive = args.get("recursive").and_then(|v| v.as_bool()).unwrap_or(false);
+                AgentToolArgs::ListFiles { path, recursive }
+            }
+            AgentToolName::Grep => {
+                let pattern = args
+                    .get("pattern")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AppError::Provider("grep missing pattern".into()))?
+                    .to_string();
+                let path = args.get("path").and_then(|v| v.as_str()).map(String::from);
+                let include = args.get("include").and_then(|v| v.as_str()).map(String::from);
+                AgentToolArgs::Grep { pattern, path, include }
             }
         };
         Ok(AgentToolCall { id: gtc.id, name, arguments })
