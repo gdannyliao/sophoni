@@ -2580,3 +2580,61 @@ async fn run_command_self_heal_fixes_compile_error_against_real_provider() {
         edit_calls
     );
 }
+
+// ── truncate_output 测试（规格成功标准 #4：输出截断让模型知道信息不全）──
+
+#[test]
+fn truncate_short_input_returned_asis_without_hint() {
+    let out = super::tools::truncate_output("line1\nline2\n", 100, 4000);
+    assert_eq!(out, "line1\nline2");
+    assert!(!out.contains("截断"));
+}
+
+#[test]
+fn truncate_when_too_many_lines_adds_hint_with_counts() {
+    // 5 行输入，max_lines=2 → 应截断，提示显示"前 2/5 行"。
+    let input = "l1\nl2\nl3\nl4\nl5\n";
+    let out = super::tools::truncate_output(input, 2, 4000);
+    assert!(out.starts_with("l1\nl2\n"), "应只保留前 2 行");
+    assert!(
+        out.contains("截断"),
+        "截断提示必须出现，让模型知道输出不全"
+    );
+    assert!(
+        out.contains("手动运行"),
+        "提示应引导模型知道完整输出需另行获取"
+    );
+    assert!(
+        out.contains("前 2/5 行"),
+        "提示应显示实际/总行数，got: {out}"
+    );
+}
+
+#[test]
+fn truncate_when_too_many_chars_adds_hint() {
+    // 单行但字符数超 max_chars。
+    let long_line = "a".repeat(100);
+    let out = super::tools::truncate_output(&long_line, 100, 10);
+    assert!(out.contains("截断"));
+    // 字符上限 10 → 只保留前 10 个字符，提示里的"总行数"是 1（单行）。
+    assert!(out.contains("前 1/1 行"));
+    // 主体不应超过 10 个 'a'。
+    let body = out.lines().next().unwrap();
+    assert_eq!(body.chars().filter(|c| *c == 'a').count(), 10);
+}
+
+#[test]
+fn truncate_empty_input_returns_empty() {
+    let out = super::tools::truncate_output("", 100, 4000);
+    assert_eq!(out, "");
+    assert!(!out.contains("截断"));
+}
+
+#[test]
+fn truncate_exactly_at_limit_not_truncated() {
+    // 恰好等于上限，不应截断。
+    let input = "a\nb\n";
+    let out = super::tools::truncate_output(input, 2, 4000);
+    assert_eq!(out, "a\nb");
+    assert!(!out.contains("截断"));
+}

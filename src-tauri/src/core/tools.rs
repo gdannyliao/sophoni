@@ -571,7 +571,7 @@ fn normalize_one_quote(c: char) -> char {
     }
 }
 
-fn truncate_output(s: &str, max_lines: usize, max_chars: usize) -> String {
+pub(crate) fn truncate_output(s: &str, max_lines: usize, max_chars: usize) -> String {
     let truncated: String = s.chars().take(max_chars).collect();
     let lines: Vec<&str> = truncated.lines().take(max_lines).collect();
     let result = lines.join("\n");
