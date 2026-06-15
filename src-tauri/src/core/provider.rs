@@ -31,7 +31,11 @@ pub struct FakeProvider {
 #[cfg(test)]
 impl FakeProvider {
     pub fn new(script: Vec<ProviderResponse>) -> Self {
-        Self { script, call_count: 0, error: None }
+        Self {
+            script,
+            call_count: 0,
+            error: None,
+        }
     }
 
     pub fn always(response: ProviderResponse) -> Self {
@@ -39,7 +43,11 @@ impl FakeProvider {
     }
 
     pub fn always_error(message: &str) -> Self {
-        Self { script: vec![], call_count: 0, error: Some(message.to_string()) }
+        Self {
+            script: vec![],
+            call_count: 0,
+            error: Some(message.to_string()),
+        }
     }
 }
 
@@ -73,7 +81,9 @@ pub fn fake_read_call(id: &str, path: &str) -> AgentToolCall {
     AgentToolCall {
         id: id.to_string(),
         name: AgentToolName::ReadFile,
-        arguments: AgentToolArgs::Read { path: path.to_string() },
+        arguments: AgentToolArgs::Read {
+            path: path.to_string(),
+        },
     }
 }
 
@@ -115,7 +125,10 @@ impl GlmProvider {
                 tool_calls: None,
                 tool_call_id: None,
             },
-            ConversationTurn::Assistant { content, tool_calls } => GlmMessage {
+            ConversationTurn::Assistant {
+                content,
+                tool_calls,
+            } => GlmMessage {
                 role: "assistant".to_string(),
                 content: content.clone(),
                 tool_calls: if tool_calls.is_empty() {
@@ -125,7 +138,10 @@ impl GlmProvider {
                 },
                 tool_call_id: None,
             },
-            ConversationTurn::Tool { tool_call_id, result } => GlmMessage {
+            ConversationTurn::Tool {
+                tool_call_id,
+                result,
+            } => GlmMessage {
                 role: "tool".to_string(),
                 content: Some(result.content.clone()),
                 tool_calls: None,
@@ -145,11 +161,20 @@ impl GlmProvider {
                 "list_files",
                 serde_json::json!({ "path": path, "recursive": recursive }),
             ),
-            AgentToolArgs::Grep { pattern, path, include } => (
+            AgentToolArgs::Grep {
+                pattern,
+                path,
+                include,
+            } => (
                 "grep",
                 serde_json::json!({ "pattern": pattern, "path": path, "include": include }),
             ),
-            AgentToolArgs::EditFile { path, old_string, new_string, replace_all } => (
+            AgentToolArgs::EditFile {
+                path,
+                old_string,
+                new_string,
+                replace_all,
+            } => (
                 "edit_file",
                 serde_json::json!({
                     "path": path,
@@ -157,6 +182,26 @@ impl GlmProvider {
                     "new_string": new_string,
                     "replace_all": replace_all
                 }),
+            ),
+            AgentToolArgs::ReadAcceptanceReport { run_id } => (
+                "read_acceptance_report",
+                serde_json::json!({ "run_id": run_id }),
+            ),
+            AgentToolArgs::ReadRuntimeLog {
+                run_id,
+                file_name,
+                max_lines,
+            } => (
+                "read_runtime_log",
+                serde_json::json!({
+                    "run_id": run_id,
+                    "file_name": file_name,
+                    "max_lines": max_lines
+                }),
+            ),
+            AgentToolArgs::ListAcceptanceRuns { limit } => (
+                "list_acceptance_runs",
+                serde_json::json!({ "limit": limit }),
             ),
         };
         GlmToolCall {
@@ -208,6 +253,9 @@ impl GlmProvider {
             "list_files" => AgentToolName::ListFiles,
             "grep" => AgentToolName::Grep,
             "edit_file" => AgentToolName::EditFile,
+            "read_acceptance_report" => AgentToolName::ReadAcceptanceReport,
+            "read_runtime_log" => AgentToolName::ReadRuntimeLog,
+            "list_acceptance_runs" => AgentToolName::ListAcceptanceRuns,
             other => return Err(AppError::Provider(format!("unknown tool: {other}"))),
         };
         let args: serde_json::Value = serde_json::from_str(&gtc.function.arguments)
@@ -236,7 +284,10 @@ impl GlmProvider {
             }
             AgentToolName::ListFiles => {
                 let path = args.get("path").and_then(|v| v.as_str()).map(String::from);
-                let recursive = args.get("recursive").and_then(|v| v.as_bool()).unwrap_or(false);
+                let recursive = args
+                    .get("recursive")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
                 AgentToolArgs::ListFiles { path, recursive }
             }
             AgentToolName::Grep => {
@@ -246,8 +297,15 @@ impl GlmProvider {
                     .ok_or_else(|| AppError::Provider("grep missing pattern".into()))?
                     .to_string();
                 let path = args.get("path").and_then(|v| v.as_str()).map(String::from);
-                let include = args.get("include").and_then(|v| v.as_str()).map(String::from);
-                AgentToolArgs::Grep { pattern, path, include }
+                let include = args
+                    .get("include")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                AgentToolArgs::Grep {
+                    pattern,
+                    path,
+                    include,
+                }
             }
             AgentToolName::EditFile => {
                 let path = args
@@ -265,11 +323,59 @@ impl GlmProvider {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AppError::Provider("edit_file missing new_string".into()))?
                     .to_string();
-                let replace_all = args.get("replace_all").and_then(|v| v.as_bool()).unwrap_or(false);
-                AgentToolArgs::EditFile { path, old_string, new_string, replace_all }
+                let replace_all = args
+                    .get("replace_all")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                AgentToolArgs::EditFile {
+                    path,
+                    old_string,
+                    new_string,
+                    replace_all,
+                }
+            }
+            AgentToolName::ReadAcceptanceReport => {
+                let run_id = args
+                    .get("run_id")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                AgentToolArgs::ReadAcceptanceReport { run_id }
+            }
+            AgentToolName::ReadRuntimeLog => {
+                let run_id = args
+                    .get("run_id")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                let file_name = args
+                    .get("file_name")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AppError::Provider("read_runtime_log missing file_name".into()))?
+                    .to_string();
+                let max_lines = args
+                    .get("max_lines")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as usize)
+                    .unwrap_or(80);
+                AgentToolArgs::ReadRuntimeLog {
+                    run_id,
+                    file_name,
+                    max_lines,
+                }
+            }
+            AgentToolName::ListAcceptanceRuns => {
+                let limit = args
+                    .get("limit")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as usize)
+                    .unwrap_or(5);
+                AgentToolArgs::ListAcceptanceRuns { limit }
             }
         };
-        Ok(AgentToolCall { id: gtc.id, name, arguments })
+        Ok(AgentToolCall {
+            id: gtc.id,
+            name,
+            arguments,
+        })
     }
 }
 

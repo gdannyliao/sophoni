@@ -102,11 +102,7 @@ fn acceptance_lists_node_timestamp_runs_newest_first() {
 
     assert_eq!(
         runs,
-        vec![
-            "20260615-070000-1",
-            "20260615-070000",
-            "20260615-065959"
-        ]
+        vec!["20260615-070000-1", "20260615-070000", "20260615-065959"]
     );
 }
 
@@ -148,8 +144,8 @@ fn acceptance_reads_empty_log_as_empty_string() {
     workspace.write_run_file("20260615-070000", "report.json", "{}");
     workspace.write_run_file("20260615-070000", "runtime.log", "");
 
-    let log = read_runtime_log(workspace.path(), Some("20260615-070000"), "runtime.log", 20)
-        .unwrap();
+    let log =
+        read_runtime_log(workspace.path(), Some("20260615-070000"), "runtime.log", 20).unwrap();
 
     assert_eq!(log, "");
 }
@@ -160,8 +156,8 @@ fn acceptance_adds_trailing_newline_for_non_empty_log_tail() {
     workspace.write_run_file("20260615-070000", "report.json", "{}");
     workspace.write_run_file("20260615-070000", "runtime.log", "line 1\nline 2");
 
-    let log = read_runtime_log(workspace.path(), Some("20260615-070000"), "runtime.log", 1)
-        .unwrap();
+    let log =
+        read_runtime_log(workspace.path(), Some("20260615-070000"), "runtime.log", 1).unwrap();
 
     assert_eq!(log, "line 2\n");
 }
@@ -176,8 +172,13 @@ fn acceptance_clamps_log_tail_to_200_lines() {
         .join("\n");
     workspace.write_run_file("20260615-070000", "runtime.log", &content);
 
-    let log = read_runtime_log(workspace.path(), Some("20260615-070000"), "runtime.log", 500)
-        .unwrap();
+    let log = read_runtime_log(
+        workspace.path(),
+        Some("20260615-070000"),
+        "runtime.log",
+        500,
+    )
+    .unwrap();
 
     assert_eq!(log.lines().count(), 200);
     assert!(log.starts_with("line 51\n"));
@@ -223,10 +224,16 @@ fn acceptance_rejects_run_directory_symlink_escape() {
     let outside = TempWorkspace::new("acceptance-run-symlink-outside");
     outside.write_run_file("20260615-070000", "report.json", "{\"outside\":true}\n");
     fs::create_dir_all(workspace.runs_path()).unwrap();
-    symlink(outside.run_path("20260615-070000"), workspace.run_path("20260615-070000")).unwrap();
+    symlink(
+        outside.run_path("20260615-070000"),
+        workspace.run_path("20260615-070000"),
+    )
+    .unwrap();
 
     assert!(read_acceptance_report(workspace.path(), Some("20260615-070000")).is_err());
-    assert!(read_runtime_log(workspace.path(), Some("20260615-070000"), "runtime.log", 20).is_err());
+    assert!(
+        read_runtime_log(workspace.path(), Some("20260615-070000"), "runtime.log", 20).is_err()
+    );
 }
 
 #[test]
@@ -688,7 +695,10 @@ fn config_returns_not_configured_when_file_missing() {
 
     let _ = std::fs::remove_dir_all(&temp);
 
-    assert!(matches!(result, Err(super::errors::AppError::ConfigNotConfigured)));
+    assert!(matches!(
+        result,
+        Err(super::errors::AppError::ConfigNotConfigured)
+    ));
 }
 
 #[test]
@@ -699,7 +709,8 @@ fn config_loads_api_key_model_base_url() {
     std::fs::write(
         config_dir.join("config.toml"),
         "api_key = \"sk-test\"\nmodel = \"glm-4.6\"\nbase_url = \"https://example.com\"\n",
-    ).unwrap();
+    )
+    .unwrap();
 
     let cfg = with_home_dir(&temp, || AgentConfig::load().unwrap());
 
@@ -747,7 +758,9 @@ fn read_call(path: &str) -> AgentToolCall {
     AgentToolCall {
         id: "call-1".to_string(),
         name: AgentToolName::ReadFile,
-        arguments: AgentToolArgs::Read { path: path.to_string() },
+        arguments: AgentToolArgs::Read {
+            path: path.to_string(),
+        },
     }
 }
 
@@ -755,7 +768,40 @@ fn write_call(path: &str, content: &str) -> AgentToolCall {
     AgentToolCall {
         id: "call-2".to_string(),
         name: AgentToolName::WriteFile,
-        arguments: AgentToolArgs::Write { path: path.to_string(), content: content.to_string() },
+        arguments: AgentToolArgs::Write {
+            path: path.to_string(),
+            content: content.to_string(),
+        },
+    }
+}
+
+fn read_acceptance_report_call(run_id: Option<&str>) -> AgentToolCall {
+    AgentToolCall {
+        id: "call-acceptance-report".to_string(),
+        name: AgentToolName::ReadAcceptanceReport,
+        arguments: AgentToolArgs::ReadAcceptanceReport {
+            run_id: run_id.map(String::from),
+        },
+    }
+}
+
+fn read_runtime_log_call(run_id: Option<&str>, file_name: &str, max_lines: usize) -> AgentToolCall {
+    AgentToolCall {
+        id: "call-runtime-log".to_string(),
+        name: AgentToolName::ReadRuntimeLog,
+        arguments: AgentToolArgs::ReadRuntimeLog {
+            run_id: run_id.map(String::from),
+            file_name: file_name.to_string(),
+            max_lines,
+        },
+    }
+}
+
+fn list_acceptance_runs_call(limit: usize) -> AgentToolCall {
+    AgentToolCall {
+        id: "call-list-acceptance".to_string(),
+        name: AgentToolName::ListAcceptanceRuns,
+        arguments: AgentToolArgs::ListAcceptanceRuns { limit },
     }
 }
 
@@ -805,14 +851,19 @@ async fn tool_write_file_creates_and_returns_file_change() {
     std::fs::create_dir_all(&root).unwrap();
 
     let tools = ToolDispatcher::new(root.clone());
-    let result = tools.dispatch(&write_call("out.txt", "new content\n")).await.unwrap();
+    let result = tools
+        .dispatch(&write_call("out.txt", "new content\n"))
+        .await
+        .unwrap();
 
     let written = std::fs::read_to_string(root.join("out.txt")).unwrap();
     std::fs::remove_dir_all(&root).unwrap();
 
     assert!(!result.is_error);
     assert_eq!(written, "new content\n");
-    let change = result.file_change.expect("write should produce file_change");
+    let change = result
+        .file_change
+        .expect("write should produce file_change");
     assert_eq!(change.path, "out.txt");
     assert!(change.diff.contains("+new content"));
 }
@@ -823,21 +874,82 @@ async fn tool_write_outside_root_is_error() {
     std::fs::create_dir_all(&root).unwrap();
 
     let tools = ToolDispatcher::new(root.clone());
-    let result = tools.dispatch(&write_call("../escape.txt", "x")).await.unwrap();
+    let result = tools
+        .dispatch(&write_call("../escape.txt", "x"))
+        .await
+        .unwrap();
 
     let _ = std::fs::remove_dir_all(&root);
     assert!(result.is_error);
 }
 
+#[tokio::test]
+async fn tool_reads_latest_acceptance_report() {
+    let workspace = TempWorkspace::new("tool-acceptance-report");
+    workspace.write_run_file("2026-06-14T09-00-00Z", "report.json", r#"{"ok":false}"#);
+    workspace.write_run_file(
+        "2026-06-15T09-00-00Z",
+        "report.json",
+        r#"{"ok":true,"failureSummary":null}"#,
+    );
+
+    let tools = ToolDispatcher::new(workspace.path().to_path_buf());
+    let result = tools
+        .dispatch(&read_acceptance_report_call(None))
+        .await
+        .unwrap();
+
+    assert!(!result.is_error);
+    assert!(result.content.contains(r#""ok":true"#));
+    assert!(result.content.contains("failureSummary"));
+    assert!(result.file_change.is_none());
+}
+
+#[tokio::test]
+async fn tool_reads_runtime_log_with_max_lines() {
+    let workspace = TempWorkspace::new("tool-runtime-log");
+    workspace.write_run_file("2026-06-15T09-00-00Z", "report.json", r#"{"ok":true}"#);
+    workspace.write_run_file(
+        "2026-06-15T09-00-00Z",
+        "runtime.log",
+        "line1\nline2\nline3\nline4\n",
+    );
+
+    let tools = ToolDispatcher::new(workspace.path().to_path_buf());
+    let result = tools
+        .dispatch(&read_runtime_log_call(
+            Some("2026-06-15T09-00-00Z"),
+            "runtime.log",
+            2,
+        ))
+        .await
+        .unwrap();
+
+    assert!(!result.is_error);
+    assert_eq!(result.content, "line3\nline4\n");
+}
+
+#[tokio::test]
+async fn tool_lists_acceptance_runs_empty_returns_placeholder() {
+    let workspace = TempWorkspace::new("tool-acceptance-empty");
+    fs::create_dir_all(workspace.path()).unwrap();
+
+    let tools = ToolDispatcher::new(workspace.path().to_path_buf());
+    let result = tools.dispatch(&list_acceptance_runs_call(5)).await.unwrap();
+
+    assert!(!result.is_error);
+    assert_eq!(result.content, "（无验收运行记录）");
+}
+
 // ── GlmProvider translation tests ──
 
-use super::provider::{
-    GlmChoice, GlmFunction, GlmMessage, GlmProvider, GlmResponse, GlmToolCall,
-};
+use super::provider::{GlmChoice, GlmFunction, GlmMessage, GlmProvider, GlmResponse, GlmToolCall};
 
 #[test]
 fn glm_translates_user_turn_to_message() {
-    let turn = super::domain::ConversationTurn::User { content: "hi".into() };
+    let turn = super::domain::ConversationTurn::User {
+        content: "hi".into(),
+    };
     let msg = GlmProvider::turn_to_glm_message(&turn);
     assert_eq!(msg.role, "user");
     assert_eq!(msg.content.as_deref(), Some("hi"));
@@ -928,7 +1040,9 @@ struct CollectingSink {
 
 impl CollectingSink {
     fn new() -> Self {
-        Self { events: Mutex::new(vec![]) }
+        Self {
+            events: Mutex::new(vec![]),
+        }
     }
     fn snapshot(&self) -> Vec<super::domain::AgentEvent> {
         self.events.lock().unwrap().clone()
@@ -941,7 +1055,9 @@ impl EventSink for CollectingSink {
     }
 }
 
-fn empty_schemas() -> Vec<AgentToolSchema> { vec![] }
+fn empty_schemas() -> Vec<AgentToolSchema> {
+    vec![]
+}
 
 #[tokio::test]
 async fn agent_loop_completes_read_then_write_then_summary() {
@@ -966,7 +1082,9 @@ async fn agent_loop_completes_read_then_write_then_summary() {
         SystemPrompt("sys".into()),
         "update readme".into(),
         empty_schemas(),
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
 
     let emitted = sink.snapshot();
     std::fs::remove_dir_all(&root).unwrap();
@@ -981,20 +1099,31 @@ async fn agent_loop_stops_on_max_rounds() {
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(root.join("f.txt"), "x\n").unwrap();
 
-    let provider = FakeProvider::always(ProviderResponse::ToolCalls(vec![fake_read_call("c", "f.txt")]));
+    let provider = FakeProvider::always(ProviderResponse::ToolCalls(vec![fake_read_call(
+        "c", "f.txt",
+    )]));
     let tools = super::tools::ToolDispatcher::new(root.clone());
     let sink = CollectingSink::new();
     let cancel = Arc::new(AtomicBool::new(false));
 
     let _result = run_agent_task(
-        Box::new(provider), &tools, &sink, &cancel,
-        SystemPrompt("s".into()), "t".into(), empty_schemas(),
-    ).await.unwrap();
+        Box::new(provider),
+        &tools,
+        &sink,
+        &cancel,
+        SystemPrompt("s".into()),
+        "t".into(),
+        empty_schemas(),
+    )
+    .await
+    .unwrap();
 
     let emitted = sink.snapshot();
     std::fs::remove_dir_all(&root).unwrap();
 
-    assert!(emitted.iter().any(|e| e.kind == "error" && e.body.contains("最大轮次")));
+    assert!(emitted
+        .iter()
+        .any(|e| e.kind == "error" && e.body.contains("最大轮次")));
 }
 
 #[tokio::test]
@@ -1003,21 +1132,32 @@ async fn agent_loop_stops_on_cancel() {
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(root.join("f.txt"), "x\n").unwrap();
 
-    let provider = FakeProvider::always(ProviderResponse::ToolCalls(vec![fake_read_call("c", "f.txt")]));
+    let provider = FakeProvider::always(ProviderResponse::ToolCalls(vec![fake_read_call(
+        "c", "f.txt",
+    )]));
     let tools = super::tools::ToolDispatcher::new(root.clone());
     let sink = CollectingSink::new();
     let cancel = Arc::new(AtomicBool::new(false));
     cancel.store(true, Ordering::Relaxed);
 
     let _result = run_agent_task(
-        Box::new(provider), &tools, &sink, &cancel,
-        SystemPrompt("s".into()), "t".into(), empty_schemas(),
-    ).await.unwrap();
+        Box::new(provider),
+        &tools,
+        &sink,
+        &cancel,
+        SystemPrompt("s".into()),
+        "t".into(),
+        empty_schemas(),
+    )
+    .await
+    .unwrap();
 
     let emitted = sink.snapshot();
     std::fs::remove_dir_all(&root).unwrap();
 
-    assert!(emitted.iter().any(|e| e.kind == "error" && e.body.contains("取消")));
+    assert!(emitted
+        .iter()
+        .any(|e| e.kind == "error" && e.body.contains("取消")));
 }
 
 #[tokio::test]
@@ -1031,14 +1171,23 @@ async fn agent_loop_stops_on_provider_error() {
     let cancel = Arc::new(AtomicBool::new(false));
 
     let _result = run_agent_task(
-        Box::new(provider), &tools, &sink, &cancel,
-        SystemPrompt("s".into()), "t".into(), empty_schemas(),
-    ).await.unwrap();
+        Box::new(provider),
+        &tools,
+        &sink,
+        &cancel,
+        SystemPrompt("s".into()),
+        "t".into(),
+        empty_schemas(),
+    )
+    .await
+    .unwrap();
 
     let emitted = sink.snapshot();
     std::fs::remove_dir_all(&root).unwrap();
 
-    assert!(emitted.iter().any(|e| e.kind == "error" && e.body.contains("Provider")));
+    assert!(emitted
+        .iter()
+        .any(|e| e.kind == "error" && e.body.contains("Provider")));
 }
 
 // ── list_files 工具测试 ──
@@ -1126,7 +1275,11 @@ async fn list_files_truncates_at_200() {
 
     std::fs::remove_dir_all(&root).unwrap();
     assert!(result.content.contains("截断"));
-    let lines: Vec<&str> = result.content.lines().filter(|l| l.contains(".txt")).collect();
+    let lines: Vec<&str> = result
+        .content
+        .lines()
+        .filter(|l| l.contains(".txt"))
+        .collect();
     assert_eq!(lines.len(), 200);
 }
 
@@ -1136,7 +1289,10 @@ async fn list_files_outside_root_is_error() {
     std::fs::create_dir_all(&root).unwrap();
 
     let tools = super::tools::ToolDispatcher::new(root.clone());
-    let result = tools.dispatch(&list_call(Some("../outside"), false)).await.unwrap();
+    let result = tools
+        .dispatch(&list_call(Some("../outside"), false))
+        .await
+        .unwrap();
 
     let _ = std::fs::remove_dir_all(&root);
     assert!(result.is_error);
@@ -1164,7 +1320,10 @@ async fn grep_finds_matches() {
     std::fs::write(root.join("b.ts"), "no match here\n").unwrap();
 
     let tools = super::tools::ToolDispatcher::new(root.clone());
-    let result = tools.dispatch(&grep_call("invoke", None, None)).await.unwrap();
+    let result = tools
+        .dispatch(&grep_call("invoke", None, None))
+        .await
+        .unwrap();
 
     std::fs::remove_dir_all(&root).unwrap();
     assert!(!result.is_error);
@@ -1180,7 +1339,10 @@ async fn grep_no_match_returns_placeholder() {
     std::fs::write(root.join("a.txt"), "hello\n").unwrap();
 
     let tools = super::tools::ToolDispatcher::new(root.clone());
-    let result = tools.dispatch(&grep_call("nonexistent", None, None)).await.unwrap();
+    let result = tools
+        .dispatch(&grep_call("nonexistent", None, None))
+        .await
+        .unwrap();
 
     std::fs::remove_dir_all(&root).unwrap();
     assert!(!result.is_error);
@@ -1194,7 +1356,10 @@ async fn grep_regex_word_boundary() {
     std::fs::write(root.join("a.txt"), "invoke\nxinvokey\ninvoked\n").unwrap();
 
     let tools = super::tools::ToolDispatcher::new(root.clone());
-    let result = tools.dispatch(&grep_call(r"\binvoke\b", None, None)).await.unwrap();
+    let result = tools
+        .dispatch(&grep_call(r"\binvoke\b", None, None))
+        .await
+        .unwrap();
 
     std::fs::remove_dir_all(&root).unwrap();
     let match_lines: Vec<&str> = result.content.lines().filter(|l| l.contains(":")).collect();
@@ -1210,7 +1375,10 @@ async fn grep_ignores_node_modules() {
     std::fs::write(root.join("real.ts"), "let invoke = 2;\n").unwrap();
 
     let tools = super::tools::ToolDispatcher::new(root.clone());
-    let result = tools.dispatch(&grep_call("invoke", None, None)).await.unwrap();
+    let result = tools
+        .dispatch(&grep_call("invoke", None, None))
+        .await
+        .unwrap();
 
     std::fs::remove_dir_all(&root).unwrap();
     assert!(!result.content.contains("node_modules"));
@@ -1226,7 +1394,10 @@ async fn grep_skips_large_files() {
     std::fs::write(root.join("small.txt"), "invoke here\n").unwrap();
 
     let tools = super::tools::ToolDispatcher::new(root.clone());
-    let result = tools.dispatch(&grep_call("invoke", None, None)).await.unwrap();
+    let result = tools
+        .dispatch(&grep_call("invoke", None, None))
+        .await
+        .unwrap();
 
     std::fs::remove_dir_all(&root).unwrap();
     assert!(!result.content.contains("big.txt"));
@@ -1241,7 +1412,10 @@ async fn grep_truncates_at_100() {
     std::fs::write(root.join("many.txt"), &content).unwrap();
 
     let tools = super::tools::ToolDispatcher::new(root.clone());
-    let result = tools.dispatch(&grep_call("invoke", None, None)).await.unwrap();
+    let result = tools
+        .dispatch(&grep_call("invoke", None, None))
+        .await
+        .unwrap();
 
     std::fs::remove_dir_all(&root).unwrap();
     assert!(result.content.contains("截断"));
@@ -1257,7 +1431,10 @@ async fn grep_include_glob_filter() {
     std::fs::write(root.join("b.js"), "invoke\n").unwrap();
 
     let tools = super::tools::ToolDispatcher::new(root.clone());
-    let result = tools.dispatch(&grep_call("invoke", None, Some("*.ts"))).await.unwrap();
+    let result = tools
+        .dispatch(&grep_call("invoke", None, Some("*.ts")))
+        .await
+        .unwrap();
 
     std::fs::remove_dir_all(&root).unwrap();
     assert!(result.content.contains("a.ts"));
@@ -1270,7 +1447,10 @@ async fn grep_outside_root_is_error() {
     std::fs::create_dir_all(&root).unwrap();
 
     let tools = super::tools::ToolDispatcher::new(root.clone());
-    let result = tools.dispatch(&grep_call("x", Some("../outside"), None)).await.unwrap();
+    let result = tools
+        .dispatch(&grep_call("x", Some("../outside"), None))
+        .await
+        .unwrap();
 
     let _ = std::fs::remove_dir_all(&root);
     assert!(result.is_error);
@@ -1376,12 +1556,124 @@ fn glm_parses_grep_tool_call() {
         super::domain::ProviderResponse::ToolCalls(calls) => {
             assert_eq!(calls.len(), 1);
             match &calls[0].arguments {
-                super::domain::AgentToolArgs::Grep { pattern, path, include } => {
+                super::domain::AgentToolArgs::Grep {
+                    pattern,
+                    path,
+                    include,
+                } => {
                     assert_eq!(pattern, "invoke");
                     assert!(path.is_none());
                     assert_eq!(include.as_deref(), Some("*.ts"));
                 }
                 _ => panic!("expected Grep args"),
+            }
+        }
+        _ => panic!("expected ToolCalls"),
+    }
+}
+
+#[test]
+fn glm_parses_read_runtime_log_tool_call() {
+    let resp = super::provider::GlmResponse {
+        choices: vec![super::provider::GlmChoice {
+            message: super::provider::GlmMessage {
+                role: "assistant".into(),
+                content: None,
+                tool_calls: Some(vec![super::provider::GlmToolCall {
+                    id: "c-runtime".into(),
+                    kind: "function".into(),
+                    function: super::provider::GlmFunction {
+                        name: "read_runtime_log".into(),
+                        arguments: r#"{"run_id":"2026-06-15T09-00-00Z","file_name":"runtime.log","max_lines":3}"#.into(),
+                    },
+                }]),
+                tool_call_id: None,
+            },
+        }],
+    };
+    let translated = super::provider::GlmProvider::translate_response(resp).unwrap();
+    match translated {
+        super::domain::ProviderResponse::ToolCalls(calls) => {
+            assert_eq!(calls.len(), 1);
+            match &calls[0].arguments {
+                super::domain::AgentToolArgs::ReadRuntimeLog {
+                    run_id,
+                    file_name,
+                    max_lines,
+                } => {
+                    assert_eq!(run_id.as_deref(), Some("2026-06-15T09-00-00Z"));
+                    assert_eq!(file_name, "runtime.log");
+                    assert_eq!(*max_lines, 3);
+                }
+                _ => panic!("expected ReadRuntimeLog args"),
+            }
+        }
+        _ => panic!("expected ToolCalls"),
+    }
+}
+
+#[test]
+fn glm_parses_list_acceptance_runs_default_limit() {
+    let resp = super::provider::GlmResponse {
+        choices: vec![super::provider::GlmChoice {
+            message: super::provider::GlmMessage {
+                role: "assistant".into(),
+                content: None,
+                tool_calls: Some(vec![super::provider::GlmToolCall {
+                    id: "c-list-acceptance".into(),
+                    kind: "function".into(),
+                    function: super::provider::GlmFunction {
+                        name: "list_acceptance_runs".into(),
+                        arguments: r#"{}"#.into(),
+                    },
+                }]),
+                tool_call_id: None,
+            },
+        }],
+    };
+    let translated = super::provider::GlmProvider::translate_response(resp).unwrap();
+    match translated {
+        super::domain::ProviderResponse::ToolCalls(calls) => {
+            assert_eq!(calls.len(), 1);
+            match &calls[0].arguments {
+                super::domain::AgentToolArgs::ListAcceptanceRuns { limit } => {
+                    assert_eq!(*limit, 5);
+                }
+                _ => panic!("expected ListAcceptanceRuns args"),
+            }
+        }
+        _ => panic!("expected ToolCalls"),
+    }
+}
+
+#[test]
+fn glm_parses_read_acceptance_report_optional_run_id() {
+    let resp = super::provider::GlmResponse {
+        choices: vec![super::provider::GlmChoice {
+            message: super::provider::GlmMessage {
+                role: "assistant".into(),
+                content: None,
+                tool_calls: Some(vec![super::provider::GlmToolCall {
+                    id: "c-report".into(),
+                    kind: "function".into(),
+                    function: super::provider::GlmFunction {
+                        name: "read_acceptance_report".into(),
+                        arguments: r#"{}"#.into(),
+                    },
+                }]),
+                tool_call_id: None,
+            },
+        }],
+    };
+    let translated = super::provider::GlmProvider::translate_response(resp).unwrap();
+    match translated {
+        super::domain::ProviderResponse::ToolCalls(calls) => {
+            assert_eq!(calls.len(), 1);
+            match &calls[0].arguments {
+                super::domain::AgentToolArgs::ReadAcceptanceReport { run_id } => {
+                    assert!(run_id.is_none());
+                }
+                _ => panic!("expected ReadAcceptanceReport args"),
             }
         }
         _ => panic!("expected ToolCalls"),
@@ -1410,7 +1702,10 @@ async fn edit_file_basic_replace() {
     std::fs::write(root.join("a.txt"), "hello world\nfoo bar\n").unwrap();
 
     let tools = super::tools::ToolDispatcher::new(root.clone());
-    let result = tools.dispatch(&edit_call("a.txt", "world", "Rust", false)).await.unwrap();
+    let result = tools
+        .dispatch(&edit_call("a.txt", "world", "Rust", false))
+        .await
+        .unwrap();
 
     let written = std::fs::read_to_string(root.join("a.txt")).unwrap();
     std::fs::remove_dir_all(&root).unwrap();
@@ -1429,12 +1724,15 @@ async fn edit_file_multiline_replace() {
     std::fs::write(root.join("a.txt"), "line1\nline2\nline3\n").unwrap();
 
     let tools = super::tools::ToolDispatcher::new(root.clone());
-    let result = tools.dispatch(&edit_call(
-        "a.txt",
-        "line1\nline2",
-        "replaced1\nreplaced2",
-        false,
-    )).await.unwrap();
+    let result = tools
+        .dispatch(&edit_call(
+            "a.txt",
+            "line1\nline2",
+            "replaced1\nreplaced2",
+            false,
+        ))
+        .await
+        .unwrap();
 
     let written = std::fs::read_to_string(root.join("a.txt")).unwrap();
     std::fs::remove_dir_all(&root).unwrap();
@@ -1450,7 +1748,10 @@ async fn edit_file_not_found_is_error() {
     std::fs::write(root.join("a.txt"), "hello\n").unwrap();
 
     let tools = super::tools::ToolDispatcher::new(root.clone());
-    let result = tools.dispatch(&edit_call("a.txt", "nonexistent", "x", false)).await.unwrap();
+    let result = tools
+        .dispatch(&edit_call("a.txt", "nonexistent", "x", false))
+        .await
+        .unwrap();
 
     std::fs::remove_dir_all(&root).unwrap();
     assert!(result.is_error);
@@ -1464,7 +1765,10 @@ async fn edit_file_not_unique_without_replace_all() {
     std::fs::write(root.join("a.txt"), "foo\nfoo\nfoo\n").unwrap();
 
     let tools = super::tools::ToolDispatcher::new(root.clone());
-    let result = tools.dispatch(&edit_call("a.txt", "foo", "bar", false)).await.unwrap();
+    let result = tools
+        .dispatch(&edit_call("a.txt", "foo", "bar", false))
+        .await
+        .unwrap();
 
     std::fs::remove_dir_all(&root).unwrap();
     assert!(result.is_error);
@@ -1478,7 +1782,10 @@ async fn edit_file_replace_all() {
     std::fs::write(root.join("a.txt"), "foo\nfoo\nfoo\n").unwrap();
 
     let tools = super::tools::ToolDispatcher::new(root.clone());
-    let result = tools.dispatch(&edit_call("a.txt", "foo", "bar", true)).await.unwrap();
+    let result = tools
+        .dispatch(&edit_call("a.txt", "foo", "bar", true))
+        .await
+        .unwrap();
 
     let written = std::fs::read_to_string(root.join("a.txt")).unwrap();
     std::fs::remove_dir_all(&root).unwrap();
@@ -1495,7 +1802,10 @@ async fn edit_file_old_equals_new_is_error() {
     std::fs::write(root.join("a.txt"), "hello\n").unwrap();
 
     let tools = super::tools::ToolDispatcher::new(root.clone());
-    let result = tools.dispatch(&edit_call("a.txt", "hello", "hello", false)).await.unwrap();
+    let result = tools
+        .dispatch(&edit_call("a.txt", "hello", "hello", false))
+        .await
+        .unwrap();
 
     std::fs::remove_dir_all(&root).unwrap();
     assert!(result.is_error);
@@ -1508,7 +1818,10 @@ async fn edit_file_nonexistent_file_is_error() {
     std::fs::create_dir_all(&root).unwrap();
 
     let tools = super::tools::ToolDispatcher::new(root.clone());
-    let result = tools.dispatch(&edit_call("nope.txt", "old", "new", false)).await.unwrap();
+    let result = tools
+        .dispatch(&edit_call("nope.txt", "old", "new", false))
+        .await
+        .unwrap();
 
     let _ = std::fs::remove_dir_all(&root);
     assert!(result.is_error);
@@ -1520,7 +1833,10 @@ async fn edit_file_outside_root_is_error() {
     std::fs::create_dir_all(&root).unwrap();
 
     let tools = super::tools::ToolDispatcher::new(root.clone());
-    let result = tools.dispatch(&edit_call("../outside", "old", "new", false)).await.unwrap();
+    let result = tools
+        .dispatch(&edit_call("../outside", "old", "new", false))
+        .await
+        .unwrap();
 
     let _ = std::fs::remove_dir_all(&root);
     assert!(result.is_error);
@@ -1534,7 +1850,10 @@ async fn edit_file_quote_normalization_curly_to_straight() {
 
     let curly_old = "let x = \u{201C}hello\u{201D};";
     let tools = super::tools::ToolDispatcher::new(root.clone());
-    let result = tools.dispatch(&edit_call("a.txt", curly_old, "let x = \"world\";", false)).await.unwrap();
+    let result = tools
+        .dispatch(&edit_call("a.txt", curly_old, "let x = \"world\";", false))
+        .await
+        .unwrap();
 
     let written = std::fs::read_to_string(root.join("a.txt")).unwrap();
     std::fs::remove_dir_all(&root).unwrap();
@@ -1551,12 +1870,15 @@ async fn edit_file_preserves_curly_quotes_in_file() {
 
     let straight_old = "let x = \"hello\";";
     let tools = super::tools::ToolDispatcher::new(root.clone());
-    let result = tools.dispatch(&edit_call(
-        "a.txt",
-        straight_old,
-        "let x = \u{201C}world\u{201D};",
-        false,
-    )).await.unwrap();
+    let result = tools
+        .dispatch(&edit_call(
+            "a.txt",
+            straight_old,
+            "let x = \u{201C}world\u{201D};",
+            false,
+        ))
+        .await
+        .unwrap();
 
     let written = std::fs::read_to_string(root.join("a.txt")).unwrap();
     std::fs::remove_dir_all(&root).unwrap();
@@ -1579,7 +1901,8 @@ fn glm_parses_edit_file_tool_call() {
                     kind: "function".into(),
                     function: super::provider::GlmFunction {
                         name: "edit_file".into(),
-                        arguments: r#"{"path":"a.txt","old_string":"hello","new_string":"world"}"#.into(),
+                        arguments: r#"{"path":"a.txt","old_string":"hello","new_string":"world"}"#
+                            .into(),
                     },
                 }]),
                 tool_call_id: None,
@@ -1591,7 +1914,12 @@ fn glm_parses_edit_file_tool_call() {
         super::domain::ProviderResponse::ToolCalls(calls) => {
             assert_eq!(calls.len(), 1);
             match &calls[0].arguments {
-                super::domain::AgentToolArgs::EditFile { path, old_string, new_string, replace_all } => {
+                super::domain::AgentToolArgs::EditFile {
+                    path,
+                    old_string,
+                    new_string,
+                    replace_all,
+                } => {
                     assert_eq!(path, "a.txt");
                     assert_eq!(old_string, "hello");
                     assert_eq!(new_string, "world");
@@ -1625,14 +1953,12 @@ fn glm_parses_edit_file_with_replace_all() {
     };
     let translated = super::provider::GlmProvider::translate_response(resp).unwrap();
     match translated {
-        super::domain::ProviderResponse::ToolCalls(calls) => {
-            match &calls[0].arguments {
-                super::domain::AgentToolArgs::EditFile { replace_all, .. } => {
-                    assert!(*replace_all);
-                }
-                _ => panic!("expected EditFile args"),
+        super::domain::ProviderResponse::ToolCalls(calls) => match &calls[0].arguments {
+            super::domain::AgentToolArgs::EditFile { replace_all, .. } => {
+                assert!(*replace_all);
             }
-        }
+            _ => panic!("expected EditFile args"),
+        },
         _ => panic!("expected ToolCalls"),
     }
 }

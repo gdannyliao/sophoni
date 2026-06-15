@@ -4,6 +4,7 @@ use chrono::Utc;
 use uuid::Uuid;
 use walkdir::WalkDir;
 
+use super::acceptance::{list_acceptance_runs, read_acceptance_report, read_runtime_log};
 use super::domain::{
     AgentToolArgs, AgentToolCall, AgentToolName, AgentToolResult, ChangeKind, FileChange,
 };
@@ -12,6 +13,8 @@ use super::workspace::{lexical_normalize, WorkspaceFs};
 
 const LIST_FILES_MAX: usize = 200;
 const GREP_MAX: usize = 100;
+const ACCEPTANCE_RUNS_LIMIT_MIN: usize = 1;
+const ACCEPTANCE_RUNS_LIMIT_MAX: usize = 20;
 const MAX_FILE_BYTES: u64 = 1_000_000;
 const MAX_DEPTH: usize = 10;
 
@@ -32,7 +35,9 @@ pub struct ToolDispatcher {
 
 impl ToolDispatcher {
     pub fn new(root: PathBuf) -> Self {
-        Self { fs: WorkspaceFs::new(root) }
+        Self {
+            fs: WorkspaceFs::new(root),
+        }
     }
 
     pub async fn dispatch(&self, call: &AgentToolCall) -> AppResult<AgentToolResult> {
@@ -46,13 +51,53 @@ impl ToolDispatcher {
             (AgentToolName::ListFiles, AgentToolArgs::ListFiles { path, recursive }) => {
                 self.list_files(&call.id, path.as_deref(), *recursive).await
             }
-            (AgentToolName::Grep, AgentToolArgs::Grep { pattern, path, include }) => {
-                self.grep(&call.id, pattern, path.as_deref(), include.as_deref()).await
+            (
+                AgentToolName::Grep,
+                AgentToolArgs::Grep {
+                    pattern,
+                    path,
+                    include,
+                },
+            ) => {
+                self.grep(&call.id, pattern, path.as_deref(), include.as_deref())
+                    .await
             }
-            (AgentToolName::EditFile, AgentToolArgs::EditFile { path, old_string, new_string, replace_all }) => {
-                self.edit_file(&call.id, path, old_string, new_string, *replace_all).await
+            (
+                AgentToolName::EditFile,
+                AgentToolArgs::EditFile {
+                    path,
+                    old_string,
+                    new_string,
+                    replace_all,
+                },
+            ) => {
+                self.edit_file(&call.id, path, old_string, new_string, *replace_all)
+                    .await
             }
-            _ => Err(AppError::Tool("tool name and arguments do not match".into())),
+            (
+                AgentToolName::ReadAcceptanceReport,
+                AgentToolArgs::ReadAcceptanceReport { run_id },
+            ) => {
+                self.read_acceptance_report(&call.id, run_id.as_deref())
+                    .await
+            }
+            (
+                AgentToolName::ReadRuntimeLog,
+                AgentToolArgs::ReadRuntimeLog {
+                    run_id,
+                    file_name,
+                    max_lines,
+                },
+            ) => {
+                self.read_runtime_log(&call.id, run_id.as_deref(), file_name, *max_lines)
+                    .await
+            }
+            (AgentToolName::ListAcceptanceRuns, AgentToolArgs::ListAcceptanceRuns { limit }) => {
+                self.list_acceptance_runs(&call.id, *limit).await
+            }
+            _ => Err(AppError::Tool(
+                "tool name and arguments do not match".into(),
+            )),
         }
     }
 
@@ -69,7 +114,12 @@ impl ToolDispatcher {
         }
     }
 
-    async fn write_file(&self, call_id: &str, path: &str, content: &str) -> AppResult<AgentToolResult> {
+    async fn write_file(
+        &self,
+        call_id: &str,
+        path: &str,
+        content: &str,
+    ) -> AppResult<AgentToolResult> {
         let full = self.fs.root().join(path);
         let write = match self.fs.write_text_with_snapshot(&full, content) {
             Ok(w) => w,
@@ -81,7 +131,11 @@ impl ToolDispatcher {
             id: Uuid::new_v4(),
             task_run_id: Uuid::new_v4(),
             path: path.to_string(),
-            kind: if existed { ChangeKind::Modified } else { ChangeKind::Created },
+            kind: if existed {
+                ChangeKind::Modified
+            } else {
+                ChangeKind::Created
+            },
             diff: write.diff,
             created_at: Utc::now(),
         };
@@ -124,7 +178,11 @@ impl ToolDispatcher {
             if entry.path() == target {
                 continue;
             }
-            let kind = if entry.file_type().is_dir() { "dir" } else { "file" };
+            let kind = if entry.file_type().is_dir() {
+                "dir"
+            } else {
+                "file"
+            };
             let rel = entry.path().strip_prefix(&root).unwrap_or(entry.path());
             entries.push(format!("{kind}  {}", rel.display()));
             if entries.len() >= LIST_FILES_MAX {
@@ -249,7 +307,10 @@ impl ToolDispatcher {
         replace_all: bool,
     ) -> AppResult<AgentToolResult> {
         if old_string == new_string {
-            return Ok(tool_error(call_id, "old_string 和 new_string 相同,无需替换"));
+            return Ok(tool_error(
+                call_id,
+                "old_string 和 new_string 相同,无需替换",
+            ));
         }
 
         let full = self.fs.root().join(path);
@@ -261,15 +322,21 @@ impl ToolDispatcher {
         let actual_old = match find_actual_string(&content, old_string) {
             Some(s) => s,
             None => {
-                return Ok(tool_error(call_id, "未找到匹配的文本。请先 read_file 确认当前内容。"))
+                return Ok(tool_error(
+                    call_id,
+                    "未找到匹配的文本。请先 read_file 确认当前内容。",
+                ))
             }
         };
 
         let match_count = content.matches(actual_old.as_str()).count();
         if match_count > 1 && !replace_all {
-            return Ok(tool_error(call_id, &format!(
+            return Ok(tool_error(
+                call_id,
+                &format!(
                 "找到 {match_count} 处匹配,请提供更多上下文使 old_string 唯一,或设 replace_all=true"
-            )));
+            ),
+            ));
         }
 
         let updated = if replace_all {
@@ -304,6 +371,61 @@ impl ToolDispatcher {
             is_error: false,
             file_change: Some(change),
         })
+    }
+
+    async fn read_acceptance_report(
+        &self,
+        call_id: &str,
+        run_id: Option<&str>,
+    ) -> AppResult<AgentToolResult> {
+        match read_acceptance_report(self.fs.root(), run_id) {
+            Ok(content) => Ok(AgentToolResult {
+                tool_call_id: call_id.to_string(),
+                content,
+                is_error: false,
+                file_change: None,
+            }),
+            Err(e) => Ok(tool_error(call_id, &format!("读取验收报告失败: {e}"))),
+        }
+    }
+
+    async fn read_runtime_log(
+        &self,
+        call_id: &str,
+        run_id: Option<&str>,
+        file_name: &str,
+        max_lines: usize,
+    ) -> AppResult<AgentToolResult> {
+        match read_runtime_log(self.fs.root(), run_id, file_name, max_lines) {
+            Ok(content) => Ok(AgentToolResult {
+                tool_call_id: call_id.to_string(),
+                content,
+                is_error: false,
+                file_change: None,
+            }),
+            Err(e) => Ok(tool_error(call_id, &format!("读取运行日志失败: {e}"))),
+        }
+    }
+
+    async fn list_acceptance_runs(
+        &self,
+        call_id: &str,
+        limit: usize,
+    ) -> AppResult<AgentToolResult> {
+        let limit = limit.clamp(ACCEPTANCE_RUNS_LIMIT_MIN, ACCEPTANCE_RUNS_LIMIT_MAX);
+        match list_acceptance_runs(self.fs.root(), limit) {
+            Ok(runs) => Ok(AgentToolResult {
+                tool_call_id: call_id.to_string(),
+                content: if runs.is_empty() {
+                    "（无验收运行记录）".to_string()
+                } else {
+                    runs.join("\n")
+                },
+                is_error: false,
+                file_change: None,
+            }),
+            Err(e) => Ok(tool_error(call_id, &format!("列出验收运行失败: {e}"))),
+        }
     }
 }
 
@@ -349,7 +471,10 @@ fn find_actual_string(content: &str, old_string: &str) -> Option<String> {
     let content_chars: Vec<char> = content.chars().collect();
     let old_chars: Vec<char> = old_string.chars().collect();
 
-    let norm_content: String = content_chars.iter().map(|c| normalize_one_quote(*c)).collect();
+    let norm_content: String = content_chars
+        .iter()
+        .map(|c| normalize_one_quote(*c))
+        .collect();
     let norm_old: String = old_chars.iter().map(|c| normalize_one_quote(*c)).collect();
 
     let idx = norm_content.find(&norm_old)?;
@@ -359,7 +484,9 @@ fn find_actual_string(content: &str, old_string: &str) -> Option<String> {
     let char_len = old_chars.len();
 
     // 从原 content 的字符序列里取对应片段(保留原引号)。
-    let actual: String = content_chars[char_start..char_start + char_len].iter().collect();
+    let actual: String = content_chars[char_start..char_start + char_len]
+        .iter()
+        .collect();
     Some(actual)
 }
 
