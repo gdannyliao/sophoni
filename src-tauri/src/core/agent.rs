@@ -22,7 +22,31 @@ pub struct AgentTaskResult {
     pub file_changes: Vec<FileChange>,
 }
 
-const SYSTEM_PROMPT: &str = "你是桌面工作区 Agent。只能操作工作区内文件。
+const MAX_ROUNDS: usize = 12;
+
+fn command_description(level: super::command_risk::RiskLevel) -> String {
+    use super::command_risk::RiskLevel;
+    match level {
+        RiskLevel::Standard => {
+            "在工作区执行安全命令（测试、编译检查、lint 等）。只允许只读命令：cargo test/check/build/clippy、git status/diff/log、ls、rg、tsc、pnpm test/build/check。命令直接执行，不支持管道、重定向或 shell 特殊字符。".to_string()
+        }
+        RiskLevel::Relaxed => {
+            "在工作区执行命令。允许测试、构建、安装依赖（npm/pnpm/cargo install）、git 操作等。高危命令（rm、mv、sudo 等）会请求用户确认后再执行。不支持管道、重定向或 shell 特殊字符。".to_string()
+        }
+        RiskLevel::Unrestricted => {
+            "在工作区执行命令。允许所有命令，包括文件删除（rm）、移动（mv）、复制（cp）、安装依赖等。工作区内路径的 rm/mv/cp 直接执行，工作区外路径会请求用户确认。不支持管道、重定向或 shell 特殊字符。".to_string()
+        }
+    }
+}
+
+fn system_prompt(level: super::command_risk::RiskLevel) -> String {
+    use super::command_risk::RiskLevel;
+    let run_cmd_line = match level {
+        RiskLevel::Standard => "- run_command：执行安全命令（cargo test、cargo check、git status 等），验证代码改动。",
+        RiskLevel::Relaxed => "- run_command：执行命令（测试、构建、安装依赖、git 操作等）。高危命令会请求用户确认。",
+        RiskLevel::Unrestricted => "- run_command：执行命令（测试、构建、文件操作、安装依赖等，工作区内不限）。",
+    };
+    format!("你是桌面工作区 Agent。只能操作工作区内文件。
 
 可用工具：
 - list_files：列出目录内容，了解工作区结构。不确定文件在哪时，先用它探索。
@@ -30,7 +54,7 @@ const SYSTEM_PROMPT: &str = "你是桌面工作区 Agent。只能操作工作区
 - read_file：读取指定文件内容。
 - write_file：写入整个文件（新建或大改时用）。
 - edit_file：精确替换文件中的一段文本（小改时用，比 write_file 省 token）。
-- run_command：执行安全命令（cargo test、cargo check、git status 等），验证代码改动。
+{run_cmd_line}
 - list_acceptance_runs：列出最近验收运行 ID。
 - read_acceptance_report：读取验收报告 report.json，可不传 run_id 读取最新一次。
 - read_runtime_log：读取验收运行日志的尾部内容，可不传 run_id 读取最新一次。
@@ -44,9 +68,8 @@ const SYSTEM_PROMPT: &str = "你是桌面工作区 Agent。只能操作工作区
 6. 改完代码后，用 run_command 跑 cargo check 或 cargo test 验证改动是否正确。如果命令失败，读 stderr 定位问题并修正。
 7. 验收时优先用 read_acceptance_report 看 report.json，重点检查 ok 和 failureSummary；失败或信息不足时再用 read_runtime_log 查看相关日志。
 8. 不要在回复里直接给文件内容，通过工具操作。
-9. 完成任务后给出简短总结。";
-
-const MAX_ROUNDS: usize = 12;
+9. 完成任务后给出简短总结。")
+}
 const PER_ROUND_TIMEOUT: Duration = Duration::from_secs(30);
 const OVERALL_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -67,11 +90,11 @@ pub async fn run_agent_task(
     user_task: String,
     _schemas: Vec<AgentToolSchema>,
 ) -> AppResult<AgentTaskResult> {
-    let system = SystemPrompt(SYSTEM_PROMPT.to_string());
+    let system = SystemPrompt(system_prompt(tools.risk_level()));
     let mut turns: Vec<ConversationTurn> = vec![ConversationTurn::User { content: user_task }];
     let mut events: Vec<AgentEvent> = vec![];
     let mut file_changes: Vec<FileChange> = vec![];
-    let schemas = tool_schemas();
+    let schemas = tool_schemas(tools.risk_level());
     let deadline = Instant::now() + OVERALL_TIMEOUT;
 
     for _round in 0..MAX_ROUNDS {
@@ -158,11 +181,11 @@ fn push(events: &mut Vec<AgentEvent>, sink: &dyn EventSink, event: AgentEvent) {
     events.push(event);
 }
 
-fn tool_schemas() -> Vec<AgentToolSchema> {
+fn tool_schemas(level: super::command_risk::RiskLevel) -> Vec<AgentToolSchema> {
     vec![
         AgentToolSchema {
             name: "read_file",
-            description: "读取工作区内指定文件的文本内容。路径相对于工作区根目录。",
+            description: "读取工作区内指定文件的文本内容。路径相对于工作区根目录。".into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -173,7 +196,7 @@ fn tool_schemas() -> Vec<AgentToolSchema> {
         },
         AgentToolSchema {
             name: "write_file",
-            description: "向工作区内指定文件写入文本内容(覆盖)。路径相对于工作区根目录。",
+            description: "向工作区内指定文件写入文本内容(覆盖)。路径相对于工作区根目录。".into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -185,7 +208,7 @@ fn tool_schemas() -> Vec<AgentToolSchema> {
         },
         AgentToolSchema {
             name: "list_files",
-            description: "列出工作区内指定目录的文件和子目录。默认只列直接子项（不递归）。",
+            description: "列出工作区内指定目录的文件和子目录。默认只列直接子项（不递归）。".into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -196,7 +219,7 @@ fn tool_schemas() -> Vec<AgentToolSchema> {
         },
         AgentToolSchema {
             name: "grep",
-            description: "在工作区内搜索匹配正则表达式的文件内容。返回 path:line:content 格式的结果。",
+            description: "在工作区内搜索匹配正则表达式的文件内容。返回 path:line:content 格式的结果。".into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -209,7 +232,7 @@ fn tool_schemas() -> Vec<AgentToolSchema> {
         },
         AgentToolSchema {
             name: "edit_file",
-            description: "对已有文件做精确文本替换(search-replace)。先 read_file 看准内容,再给出 old_string(必须与文件内容精确匹配,含缩进)和 new_string。old_string 必须在文件中唯一,除非 replace_all=true。",
+            description: "对已有文件做精确文本替换(search-replace)。先 read_file 看准内容,再给出 old_string(必须与文件内容精确匹配,含缩进)和 new_string。old_string 必须在文件中唯一,除非 replace_all=true。".into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -223,7 +246,7 @@ fn tool_schemas() -> Vec<AgentToolSchema> {
         },
         AgentToolSchema {
             name: "run_command",
-            description: "在工作区执行安全命令（测试、编译检查、lint 等）。只允许只读命令：cargo test/check/build/clippy、git status/diff/log、ls、rg、tsc、pnpm test/build/check。命令直接执行，不支持管道、重定向或 shell 特殊字符。",
+            description: command_description(level),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -234,7 +257,7 @@ fn tool_schemas() -> Vec<AgentToolSchema> {
         },
         AgentToolSchema {
             name: "read_acceptance_report",
-            description: "读取验收运行的 report.json。默认读取最新一次验收运行；用于判断 ok 和 failureSummary。",
+            description: "读取验收运行的 report.json。默认读取最新一次验收运行；用于判断 ok 和 failureSummary。".into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -244,7 +267,7 @@ fn tool_schemas() -> Vec<AgentToolSchema> {
         },
         AgentToolSchema {
             name: "read_runtime_log",
-            description: "读取验收运行日志尾部内容。默认读取最新一次验收运行；max_lines 默认由模型调用方可省略，建议先读少量行。",
+            description: "读取验收运行日志尾部内容。默认读取最新一次验收运行；max_lines 默认由模型调用方可省略，建议先读少量行。".into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -257,7 +280,7 @@ fn tool_schemas() -> Vec<AgentToolSchema> {
         },
         AgentToolSchema {
             name: "list_acceptance_runs",
-            description: "列出最近验收运行 ID。limit 会限制到 1 到 20。",
+            description: "列出最近验收运行 ID。limit 会限制到 1 到 20。".into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {

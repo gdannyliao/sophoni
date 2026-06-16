@@ -190,7 +190,7 @@ pub enum ProviderResponse {
 #[derive(Debug, Clone)]
 pub struct AgentToolSchema {
     pub name: &'static str,
-    pub description: &'static str,
+    pub description: String,
     pub parameters: serde_json::Value,
 }
 

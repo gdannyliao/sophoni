@@ -65,6 +65,10 @@ impl ToolDispatcher {
         self
     }
 
+    pub fn risk_level(&self) -> RiskLevel {
+        self.risk_level
+    }
+
     pub async fn dispatch(&self, call: &AgentToolCall) -> AppResult<AgentToolResult> {
         match (&call.name, &call.arguments) {
             (AgentToolName::ReadFile, AgentToolArgs::Read { path }) => {
