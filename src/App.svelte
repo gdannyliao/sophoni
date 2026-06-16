@@ -5,9 +5,9 @@
   import ReviewView from "./lib/components/ReviewView.svelte";
   import SettingsPanel from "./lib/components/SettingsPanel.svelte";
   import ConfirmDialog from "./lib/components/ConfirmDialog.svelte";
-  import { runAgentTask, cancelAgentTask, onAgentEvent, onCommandConfirm, resolveCommandConfirm, getWorkspacePath } from "./lib/api";
+  import { runAgentTask, cancelAgentTask, onAgentEvent, onCommandConfirm, resolveCommandConfirm, getWorkspacePath, listConversations, getConversation } from "./lib/api";
   import type { UnlistenFn } from "@tauri-apps/api/event";
-  import type { AgentEvent, CommandConfirmRequest, FileChange } from "./lib/types";
+  import type { AgentEvent, CommandConfirmRequest, ConversationSummary, FileChange } from "./lib/types";
 
   let events: AgentEvent[] = [];
   let fileChanges: FileChange[] = [];
@@ -21,10 +21,15 @@
   let sidebarCollapsed = false;
   let pendingConfirm: CommandConfirmRequest | null = null;
   let workspacePath: string | null = null;
+  let conversations: ConversationSummary[] = [];
+  let activeConversationId: string | null = null;
 
   onMount(async () => {
     try {
       workspacePath = await getWorkspacePath();
+      if (workspacePath) {
+        conversations = await listConversations();
+      }
     } catch {
       workspacePath = null;
     }
@@ -40,11 +45,24 @@
     fileChanges = [];
     summary = "";
     try {
-      unlisten = await onAgentEvent((e) => { events = [...events, e]; });
+      unlisten = await onAgentEvent((e) => {
+        if (e.kind === "conversation_created") {
+          activeConversationId = e.body;
+          conversations = [{ id: e.body, title: e.body, updatedAt: new Date().toISOString() }, ...conversations];
+        }
+        events = [...events, e];
+      });
       confirmUnlisten = await onCommandConfirm((req) => { pendingConfirm = req; });
       const result = await runAgentTask(task || "读 README.md 并加一行注释");
       fileChanges = result.fileChanges;
       summary = result.summary;
+      if (activeConversationId) {
+        conversations = conversations.map((c) =>
+          c.id === activeConversationId
+            ? { ...c, title: result.summary || c.title }
+            : c
+        );
+      }
     } catch (e) {
       events = [...events, { kind: "error", title: "调用失败", body: String(e), toolCallId: undefined }];
     } finally {
@@ -70,6 +88,18 @@
   function handleWorkspaceChange(path: string) {
     workspacePath = path;
   }
+
+  async function selectConversation(id: string) {
+    try {
+      const conv = await getConversation(id);
+      activeConversationId = id;
+      events = JSON.parse(conv.eventsJson);
+      summary = events.find((e) => e.kind === "summary")?.body ?? "";
+      fileChanges = [];
+    } catch (e) {
+      events = [...events, { kind: "error", title: "加载失败", body: String(e), toolCallId: undefined }];
+    }
+  }
 </script>
 
 {#if view === "review"}
@@ -82,6 +112,9 @@
       onOpenSettings={() => (showSettings = true)}
       {workspacePath}
       onWorkspaceChange={handleWorkspaceChange}
+      {conversations}
+      {activeConversationId}
+      onSelectConversation={selectConversation}
     />
     <Conversation
       {events}
