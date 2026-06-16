@@ -1,7 +1,38 @@
 :root {
-  color: #172026;
-  background: #f5f7f8;
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  /* 色彩 */
+  --bg-primary: #0d1117;
+  --bg-secondary: #161b22;
+  --bg-tertiary: #21262d;
+  --border: #30363d;
+  --text-primary: #c9d1d9;
+  --text-secondary: #8b949e;
+  --accent: #58a6ff;
+  --accent-bg: #1f6feb;
+  --success: #3fb950;
+  --danger: #f85149;
+  --add-bg: rgba(63, 185, 80, 0.07);
+  --del-bg: rgba(248, 81, 73, 0.07);
+
+  /* 间距 */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+
+  /* 圆角 */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  /* 字体 */
+  --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: "SF Mono", "Cascadia Code", "JetBrains Mono", monospace;
+
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  font-family: var(--font-sans);
+  font-size: 14px;
 }
 
 * {
@@ -10,201 +41,33 @@
 
 body {
   margin: 0;
-  min-width: 960px;
   min-height: 100vh;
 }
 
 button,
 input {
   font: inherit;
-}
-
-.app-shell {
-  display: grid;
-  grid-template-columns: 260px minmax(420px, 1fr) 360px;
-  min-height: 100vh;
-}
-
-.sidebar,
-.context {
-  background: #ffffff;
-  border-right: 1px solid #dce3e6;
-  padding: 20px;
-}
-
-.context {
-  border-right: 0;
-  border-left: 1px solid #dce3e6;
-  overflow: auto;
-}
-
-.brand {
-  font-size: 22px;
-  font-weight: 700;
-  margin-bottom: 28px;
-}
-
-section + section {
-  margin-top: 28px;
-}
-
-h1,
-h2,
-h3,
-p {
-  margin-top: 0;
-}
-
-h2 {
-  font-size: 13px;
-  text-transform: uppercase;
-  color: #52636c;
-}
-
-.primary,
-.list-item,
-.composer button {
-  border: 1px solid #1f6feb;
-  background: #1f6feb;
-  color: white;
-  border-radius: 6px;
-  padding: 8px 10px;
-  cursor: pointer;
-}
-
-.composer button:disabled {
-  background: #9bb8ee;
-  border-color: #9bb8ee;
-  cursor: default;
-}
-
-.composer button.cancel {
-  background: transparent;
-  color: #c0392b;
-  border-color: #c0392b;
-}
-
-.list-item {
-  width: 100%;
-  text-align: left;
-}
-
-.muted {
-  color: #667780;
-  font-size: 14px;
-}
-
-.conversation {
-  display: grid;
-  grid-template-rows: auto 1fr auto;
-  min-width: 0;
-}
-
-.topbar {
-  padding: 22px 28px;
-  border-bottom: 1px solid #dce3e6;
-  background: #ffffff;
-}
-
-.topbar h1 {
-  font-size: 20px;
-  margin-bottom: 4px;
-}
-
-.messages {
-  padding: 24px 28px;
-  overflow: auto;
-}
-
-.event,
-.assistant,
-.change {
-  background: #ffffff;
-  border: 1px solid #dce3e6;
-  border-radius: 8px;
-  padding: 14px;
-  margin-bottom: 12px;
-}
-
-.event span {
-  color: #1f6feb;
-  font-size: 12px;
-  text-transform: uppercase;
-}
-
-.composer {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 10px;
-  padding: 18px 28px;
-  border-top: 1px solid #dce3e6;
-  background: #ffffff;
-}
-
-.composer input,
-.settings input {
-  width: 100%;
-  border: 1px solid #c8d2d8;
-  border-radius: 6px;
-  padding: 9px 10px;
-}
-
-pre {
-  white-space: pre-wrap;
-  font-size: 12px;
-  overflow: auto;
-}
-
-.settings-toggle {
-  position: fixed;
-  right: 380px;
-  bottom: 88px;
-  z-index: 10;
-  background: transparent;
-  color: #52636c;
-  border: 1px solid #c8d2d8;
-  border-radius: 6px;
-  padding: 6px 12px;
-  cursor: pointer;
-}
-
-.settings-toggle:hover {
-  background: #eef2f4;
-}
-
-.overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(23, 32, 38, 0.4);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 100;
-  border: 0;
-  padding: 0;
-  width: 100%;
-  cursor: default;
-  text-align: left;
-  font: inherit;
   color: inherit;
 }
 
-.overlay-content {
-  background: #ffffff;
-  border-radius: 10px;
-  padding: 28px;
-  min-width: 360px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+/* 全局按钮基础样式 */
+.btn {
+  border: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-4);
+  cursor: pointer;
 }
-
-.overlay-content .settings {
-  padding: 0;
-  border: 0;
+.btn:hover {
+  border-color: var(--text-secondary);
 }
-
-.overlay-content label {
-  display: block;
-  margin: 14px 0;
-  color: #52636c;
-  font-size: 13px;
+.btn-primary {
+  background: var(--accent-bg);
+  border-color: var(--accent-bg);
+  color: white;
+}
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: default;
 }

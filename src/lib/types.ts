@@ -4,6 +4,7 @@ export interface AgentEvent {
   kind: string;
   title: string;
   body: string;
+  toolCallId?: string;
 }
 
 export interface FileChange {
