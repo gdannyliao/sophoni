@@ -11,6 +11,8 @@
   export let conversations: ConversationSummary[] = [];
   export let activeConversationId: string | null = null;
   export let onSelectConversation: (id: string) => void = () => {};
+  export let onNewConversation: () => void = () => {};
+  export let onDeleteConversation: (id: string) => void = () => {};
 
   let status: ConfigStatus | null = null;
 
@@ -26,18 +28,20 @@
 <aside class="sidebar" class:collapsed aria-label="工作区与会话" data-testid="sidebar">
   {#if !collapsed}
     <div class="sidebar-content">
-      <div class="brand">◈ Sophoni</div>
+      <div class="brand-row">
+        <div class="brand">◈ Sophoni</div>
+        <button class="btn new-btn" data-testid="new-conversation" on:click={onNewConversation} title="新建会话">+</button>
+      </div>
       <div class="section-label">会话</div>
       {#each conversations as conv (conv.id)}
         <div
           class="session-item"
           class:active={conv.id === activeConversationId}
-          role="button"
-          tabindex="0"
-          on:click={() => onSelectConversation(conv.id)}
-          on:keydown={(e) => e.key === "Enter" && onSelectConversation(conv.id)}
         >
-          {conv.title}
+          <span class="session-title" role="button" tabindex="0" on:click={() => onSelectConversation(conv.id)} on:keydown={(e) => e.key === "Enter" && onSelectConversation(conv.id)}>
+            {conv.title}
+          </span>
+          <button class="delete-btn" data-testid="delete-conversation" on:click={() => onDeleteConversation(conv.id)} title="删除">✕</button>
         </div>
       {:else}
         <div class="session-empty">暂无会话</div>
@@ -73,7 +77,9 @@
   .sidebar.collapsed { width: 48px; }
   .sidebar-content { flex: 1; padding: var(--space-4) var(--space-3); }
   .sidebar-collapsed-content { flex: 1; display: flex; flex-direction: column; align-items: center; padding-top: var(--space-4); }
-  .brand { font-size: 15px; font-weight: 700; color: var(--accent); margin-bottom: var(--space-6); }
+  .brand-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--space-6); }
+  .brand { font-size: 15px; font-weight: 700; color: var(--accent); }
+  .new-btn { padding: 2px 8px; font-size: 16px; line-height: 1; }
   .section-label {
     font-size: 11px;
     text-transform: uppercase;
@@ -82,10 +88,12 @@
     letter-spacing: 0.5px;
   }
   .session-item {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
     padding: var(--space-2) var(--space-3);
     border-radius: var(--radius-md);
     color: var(--text-secondary);
-    cursor: pointer;
     margin-bottom: 2px;
   }
   .session-item:hover { background: var(--bg-tertiary); }
@@ -94,6 +102,25 @@
     border-left: 2px solid var(--accent);
     color: var(--text-primary);
   }
+  .session-title {
+    flex: 1;
+    cursor: pointer;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .delete-btn {
+    border: 0;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 11px;
+    cursor: pointer;
+    opacity: 0;
+    padding: 2px 4px;
+    border-radius: var(--radius-sm);
+  }
+  .session-item:hover .delete-btn { opacity: 1; }
+  .delete-btn:hover { color: var(--danger); }
   .session-empty {
     padding: var(--space-2) var(--space-3);
     color: var(--text-secondary);

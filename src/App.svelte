@@ -7,7 +7,7 @@
   import ConfirmDialog from "./lib/components/ConfirmDialog.svelte";
   import WelcomeView from "./lib/components/WelcomeView.svelte";
   import { open } from "@tauri-apps/plugin-dialog";
-  import { runAgentTask, cancelAgentTask, onAgentEvent, onCommandConfirm, resolveCommandConfirm, getWorkspacePath, setWorkspacePath, listConversations, getConversation } from "./lib/api";
+  import { runAgentTask, cancelAgentTask, onAgentEvent, onCommandConfirm, resolveCommandConfirm, getWorkspacePath, setWorkspacePath, listConversations, getConversation, deleteConversation } from "./lib/api";
   import type { UnlistenFn } from "@tauri-apps/api/event";
   import type { AgentEvent, CommandConfirmRequest, ConversationSummary, FileChange } from "./lib/types";
 
@@ -133,6 +133,27 @@
       events = [...events, { kind: "error", title: "加载失败", body: String(e), toolCallId: undefined }];
     }
   }
+
+  function newConversation() {
+    activeConversationId = null;
+    events = [];
+    fileChanges = [];
+    summary = "";
+    streamingText = "";
+  }
+
+  async function handleDeleteConversation(id: string) {
+    if (!confirm("确定删除此会话？")) return;
+    try {
+      await deleteConversation(id);
+      conversations = conversations.filter((c) => c.id !== id);
+      if (activeConversationId === id) {
+        newConversation();
+      }
+    } catch (e) {
+      events = [...events, { kind: "error", title: "删除失败", body: String(e), toolCallId: undefined }];
+    }
+  }
 </script>
 
 {#if view === "review"}
@@ -148,6 +169,8 @@
       {conversations}
       {activeConversationId}
       onSelectConversation={selectConversation}
+      onNewConversation={newConversation}
+      onDeleteConversation={handleDeleteConversation}
     />
     {#if activeConversationId === null}
       <WelcomeView

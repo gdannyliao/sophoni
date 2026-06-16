@@ -61,3 +61,7 @@ export async function listConversations(): Promise<ConversationSummary[]> {
 export async function getConversation(id: string): Promise<Conversation> {
   return invoke<Conversation>("get_conversation", { id });
 }
+
+export async function deleteConversation(id: string): Promise<void> {
+  await invoke("delete_conversation", { id });
+}

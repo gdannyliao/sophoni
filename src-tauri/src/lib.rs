@@ -243,6 +243,18 @@ async fn get_conversation(
 }
 
 #[tauri::command]
+async fn delete_conversation(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), AppError> {
+    let storage = state.storage.lock().await;
+    let uuid = uuid::Uuid::parse_str(&id)
+        .map_err(|e| AppError::Config(format!("无效会话 ID: {e}")))?;
+    storage.delete_conversation(&uuid)?;
+    Ok(())
+}
+
+#[tauri::command]
 fn cancel_agent_task(state: State<'_, AppState>) {
     state.cancel.store(true, Ordering::Relaxed);
 }
@@ -275,6 +287,7 @@ pub fn run() {
             set_workspace_path,
             list_conversations,
             get_conversation,
+            delete_conversation,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

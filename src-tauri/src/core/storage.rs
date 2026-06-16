@@ -333,6 +333,14 @@ impl Storage {
         Ok(())
     }
 
+    pub fn delete_conversation(&self, id: &Uuid) -> AppResult<()> {
+        self.conn.execute(
+            "DELETE FROM conversations WHERE id = ?1",
+            params![id.to_string()],
+        )?;
+        Ok(())
+    }
+
     #[cfg(test)]
     pub fn foreign_keys_enabled(&self) -> AppResult<bool> {
         let enabled: i64 = self
