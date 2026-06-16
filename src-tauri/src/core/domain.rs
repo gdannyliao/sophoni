@@ -200,6 +200,7 @@ pub struct AgentConfig {
     pub model: String,
     pub base_url: String,
     pub risk_level: super::command_risk::RiskLevel,
+    pub workspace_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

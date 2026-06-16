@@ -114,6 +114,7 @@ fn try_parse_multi_provider(content: &str) -> AppResult<Option<(AgentConfig, Str
             model: entry.model.unwrap_or(defaults.model),
             base_url: entry.base_url.unwrap_or(defaults.base_url),
             risk_level: parse_risk_level(&content),
+            workspace_path: parse_workspace_path(&content),
         },
         active,
     )))
@@ -145,7 +146,53 @@ fn try_parse_legacy(content: &str) -> AppResult<AgentConfig> {
             .base_url
             .unwrap_or_else(|| "https://open.bigmodel.cn/api/paas/v4".to_string()),
         risk_level: parse_risk_level(content),
+        workspace_path: parse_workspace_path(content),
     })
+}
+
+fn parse_workspace_path(content: &str) -> Option<String> {
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if let Some(val) = trimmed.strip_prefix("workspace_path") {
+            let val = val.trim().trim_start_matches('=').trim().trim_matches('"');
+            if val.is_empty() {
+                return None;
+            }
+            return Some(val.to_string());
+        }
+    }
+    None
+}
+
+pub fn save_workspace_path(path: &str) -> AppResult<()> {
+    let config_path = config_path()?;
+    let content = if config_path.exists() {
+        fs::read_to_string(&config_path)?
+    } else {
+        String::new()
+    };
+
+    let mut lines: Vec<String> = content.lines().map(String::from).collect();
+    let mut found = false;
+    for line in lines.iter_mut() {
+        if line.trim_start().starts_with("workspace_path") {
+            *line = format!("workspace_path = \"{path}\"");
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        lines.push(format!("workspace_path = \"{path}\""));
+    }
+
+    let new_content = lines.join("\n") + "\n";
+
+    if let Some(parent) = config_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&config_path, new_content)?;
+    let _ = tighten_permissions(&config_path);
+    Ok(())
 }
 
 fn parse_risk_level(content: &str) -> super::command_risk::RiskLevel {
