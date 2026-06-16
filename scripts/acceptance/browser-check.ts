@@ -267,6 +267,27 @@ export async function runBrowserAcceptance({ logger }: BrowserAcceptanceOptions)
       }),
     );
 
+    // 验证设置面板 + 风险等级选择器
+    try {
+      const settingsButton = page.getByTestId("settings-button");
+      await settingsButton.click();
+      const settingsPanel = page.getByTestId("settings-panel");
+      const panelVisible = await settingsPanel.isVisible().catch(() => false);
+      checks.push(check("settings panel opens", panelVisible));
+
+      if (panelVisible) {
+        const riskOptions = page.getByTestId("risk-level-options");
+        const optionsVisible = await riskOptions.isVisible().catch(() => false);
+        checks.push(check("risk level options visible", optionsVisible));
+
+        const standardRadio = page.getByTestId("risk-level-standard");
+        const standardVisible = await standardRadio.isVisible().catch(() => false);
+        checks.push(check("risk level standard option exists", standardVisible));
+      }
+    } catch {
+      checks.push(check("settings panel opens", false, "设置面板交互失败"));
+    }
+
     await page.screenshot({ path: screenshotPath, fullPage: true });
     checks.push(check("browser screenshot exists", existsSync(screenshotPath), SCREENSHOT_NAME));
   } catch (error) {

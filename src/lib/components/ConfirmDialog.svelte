@@ -7,18 +7,18 @@
 
 <div class="overlay" role="button" tabindex="0" on:click={() => onResolve(false)}>
   <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <div class="dialog" role="dialog" aria-modal="true" on:click|stopPropagation>
+  <div class="dialog" role="dialog" aria-modal="true" data-testid="confirm-dialog" on:click|stopPropagation>
     <div class="dialog-header">
       <span class="warn-icon">⚠️</span>
       <span class="dialog-title">命令确认</span>
     </div>
     <div class="dialog-body">
       <p class="reason">{request.reason}</p>
-      <pre class="command-text">{request.command}</pre>
+      <pre class="command-text" data-testid="confirm-command">{request.command}</pre>
     </div>
     <div class="dialog-actions">
-      <button class="btn deny-btn" on:click={() => onResolve(false)}>拒绝</button>
-      <button class="btn btn-primary allow-btn" on:click={() => onResolve(true)}>允许执行</button>
+      <button class="btn deny-btn" data-testid="confirm-deny" on:click={() => onResolve(false)}>拒绝</button>
+      <button class="btn btn-primary allow-btn" data-testid="confirm-allow" on:click={() => onResolve(true)}>允许执行</button>
     </div>
   </div>
 </div>

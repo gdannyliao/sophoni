@@ -29,7 +29,7 @@
     </div>
     <div class="sidebar-footer">
       <div class="model-info">{status?.model ?? "..."}</div>
-      <button class="btn sidebar-settings-btn" on:click={onOpenSettings}>⚙ 设置</button>
+      <button class="btn sidebar-settings-btn" data-testid="settings-button" on:click={onOpenSettings}>⚙ 设置</button>
     </div>
   {:else}
     <div class="sidebar-collapsed-content">

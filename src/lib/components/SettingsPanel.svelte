@@ -57,17 +57,17 @@
     <div class="settings-row" style="margin-top: {status ? '16px' : '0'};">
       <span class="label">风险等级</span>
     </div>
-    <div class="risk-options">
+    <div class="risk-options" data-testid="risk-level-options">
       <label class="risk-option">
-        <input type="radio" name="riskLevel" value="standard" checked={riskLevel === "standard"} on:change={onRiskLevelChange} />
+        <input type="radio" name="riskLevel" value="standard" data-testid="risk-level-standard" checked={riskLevel === "standard"} on:change={onRiskLevelChange} />
         <span>标准</span>
       </label>
       <label class="risk-option">
-        <input type="radio" name="riskLevel" value="relaxed" checked={riskLevel === "relaxed"} on:change={onRiskLevelChange} />
+        <input type="radio" name="riskLevel" value="relaxed" data-testid="risk-level-relaxed" checked={riskLevel === "relaxed"} on:change={onRiskLevelChange} />
         <span>宽松</span>
       </label>
       <label class="risk-option">
-        <input type="radio" name="riskLevel" value="unrestricted" checked={riskLevel === "unrestricted"} on:change={onRiskLevelChange} />
+        <input type="radio" name="riskLevel" value="unrestricted" data-testid="risk-level-unrestricted" checked={riskLevel === "unrestricted"} on:change={onRiskLevelChange} />
         <span>完全访问</span>
       </label>
     </div>
