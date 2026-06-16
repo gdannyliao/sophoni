@@ -90,6 +90,8 @@ pub struct AgentEvent {
     pub kind: String,
     pub title: String,
     pub body: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
 
 // ── Agent runtime types (model-agnostic) ──

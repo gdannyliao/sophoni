@@ -273,6 +273,7 @@ fn error_event(body: &str) -> AgentEvent {
         kind: "error".into(),
         title: "错误".into(),
         body: body.into(),
+        tool_call_id: None,
     }
 }
 
@@ -281,6 +282,7 @@ fn summary_event(body: &str) -> AgentEvent {
         kind: "summary".into(),
         title: "任务完成".into(),
         body: body.into(),
+        tool_call_id: None,
     }
 }
 
@@ -375,6 +377,7 @@ fn tool_call_event(call: &AgentToolCall) -> AgentEvent {
         kind: "tool_call".into(),
         title: format!("{label}: {detail}"),
         body,
+        tool_call_id: Some(call.id.clone()),
     }
 }
 
@@ -387,6 +390,7 @@ fn tool_result_event(call: &AgentToolCall, result: &AgentToolResult) -> AgentEve
         } else {
             result.content.clone()
         },
+        tool_call_id: Some(call.id.clone()),
     }
 }
 
@@ -429,16 +433,19 @@ pub fn run_mock_agent_task(workspace_root: PathBuf, prompt: &str) -> AppResult<A
                 kind: "thought".into(),
                 title: "理解任务".into(),
                 body: prompt.to_string(),
+                tool_call_id: None,
             },
             AgentEvent {
                 kind: "tool".into(),
                 title: "写入 README.md".into(),
                 body: "已写入 README.md 并生成 diff。".into(),
+                tool_call_id: None,
             },
             AgentEvent {
                 kind: "summary".into(),
                 title: "任务完成".into(),
                 body: "mock Agent 已生成可展示的文件变更。".into(),
+                tool_call_id: None,
             },
         ],
         file_changes: vec![change],
