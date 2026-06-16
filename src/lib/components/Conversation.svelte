@@ -7,6 +7,7 @@
 
   export let events: AgentEvent[] = [];
   export let summary = "";
+  export let streamingText = "";
   export let prompt = "";
   export let running = false;
   export let workspacePath = "";
@@ -14,6 +15,9 @@
   export let onRun: (prompt: string) => void = () => {};
   export let onCancel: () => void = () => {};
   export let onReview: () => void = () => {};
+
+  // 消息区容器引用，用于 token 到达时自动滚动到底部。
+  let messagesEl: HTMLDivElement | null = null;
 
   // 处理事件流：用户消息、命令卡片、变更通知
   type DisplayItem =
@@ -73,6 +77,12 @@
     }
     return items;
   }
+
+  // token 到达或事件变化时，自动滚到底部，保证流式输出始终可见。
+  // streamingText 经 App.svelte 的 rAF 节流后每帧最多变一次，滚动开销可控。
+  $: if (streamingText && messagesEl) {
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
 </script>
 
 <main class="conversation" data-testid="conversation">
@@ -91,7 +101,7 @@
     </button>
   </header>
 
-  <div class="messages" aria-label="任务会话流">
+  <div class="messages" bind:this={messagesEl} aria-label="任务会话流">
     {#each items as item}
       <div class="agent-event" data-testid="agent-event">
         {#if item.type === "user"}
@@ -107,6 +117,12 @@
         {/if}
       </div>
     {/each}
+    {#if streamingText}
+      <div class="streaming-bubble" data-testid="streaming-bubble" aria-live="polite">
+        <span class="streaming-text">{streamingText}</span>
+        <span class="streaming-cursor" aria-hidden="true">▍</span>
+      </div>
+    {/if}
     {#if summary}
       <div class="summary-card">
         <div class="summary-label">结果摘要</div>
@@ -178,6 +194,24 @@
     text-transform: uppercase;
     color: var(--text-secondary);
     margin-bottom: var(--space-2);
+  }
+  .streaming-bubble {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: var(--space-3) var(--space-4);
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.5;
+  }
+  .streaming-text { font-size: 14px; }
+  .streaming-cursor {
+    display: inline-block;
+    color: var(--text-secondary);
+    animation: blink 1s steps(2, start) infinite;
+  }
+  @keyframes blink {
+    to { visibility: hidden; }
   }
   .composer {
     display: flex;

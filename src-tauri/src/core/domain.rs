@@ -84,6 +84,17 @@ pub struct FileChange {
     pub created_at: DateTime<Utc>,
 }
 
+/// 发给前端的事件单元。通过 Tauri 事件 `agent-event` 推送。
+///
+/// `kind` 取值：
+/// - `tool_call`：模型发起了工具调用（`title` 形如 `read_file: README.md`，`body` 为参数摘要）
+/// - `tool_result`：工具执行结果（`tool_call_id` 关联到对应 `tool_call`）
+/// - `summary`：最终摘要（任务结束时整条发出）
+/// - `thought`：思考提示
+/// - `error`：错误
+/// - `token`：**流式增量文本**。`title` 标识流段（`"summary"` = 最终摘要流；
+///   `"reasoning"` = 工具调用前的推理文本流），`body` 为本次增量片段（非完整文本）。
+///   前端需按 `title` 累积拼接后渲染。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentEvent {

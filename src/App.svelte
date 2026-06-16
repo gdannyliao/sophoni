@@ -13,6 +13,7 @@
   let summary = "";
   let prompt = "";
   let running = false;
+  let streamingText = "";
   let unlisten: UnlistenFn | null = null;
   let confirmUnlisten: UnlistenFn | null = null;
   let view: "main" | "review" = "main";
@@ -22,17 +23,48 @@
 
   const WORKSPACE_ROOT = "/tmp/sophoni";
 
+  // token 节流：后端已按 30ms 窗口合并，但 IPC 回调仍可能密集到达。前端用 rAF 把
+  // 多次 token 累积到一帧内只触发一次 streamingText 赋值（=一次重渲染），彻底避免
+  // 高频 token 卡死主线程。pendingBuffer 在帧间累积，rafScheduled 防止重复调度。
+  let pendingBuffer = "";
+  let rafScheduled = false;
+
+  function scheduleFlush() {
+    if (rafScheduled) return;
+    rafScheduled = true;
+    requestAnimationFrame(() => {
+      rafScheduled = false;
+      if (pendingBuffer) {
+        streamingText += pendingBuffer;
+        pendingBuffer = "";
+      }
+    });
+  }
+
   async function runDemo(task: string) {
     running = true;
     events = [];
     fileChanges = [];
     summary = "";
+    streamingText = "";
+    pendingBuffer = "";
+    rafScheduled = false;
     try {
-      unlisten = await onAgentEvent((e) => { events = [...events, e]; });
+      // token 事件（流式增量）走 rAF 节流累积到 streamingText，避免每个 token 都 push
+      // 进 events 数组导致 processEvents O(n²) 重算。其他事件仍走 events。
+      unlisten = await onAgentEvent((e) => {
+        if (e.kind === "token") {
+          pendingBuffer += e.body;
+          scheduleFlush();
+        } else {
+          events = [...events, e];
+        }
+      });
       confirmUnlisten = await onCommandConfirm((req) => { pendingConfirm = req; });
       const result = await runAgentTask(WORKSPACE_ROOT, task || "读 README.md 并加一行注释");
       fileChanges = result.fileChanges;
       summary = result.summary;
+      streamingText = ""; // 任务结束，流式文本由 summary/事件定型
     } catch (e) {
       events = [...events, { kind: "error", title: "调用失败", body: String(e), toolCallId: undefined }];
     } finally {
@@ -68,6 +100,7 @@
     <Conversation
       {events}
       {summary}
+      {streamingText}
       bind:prompt
       {running}
       workspacePath={WORKSPACE_ROOT}
