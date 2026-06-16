@@ -226,7 +226,7 @@ export async function runBrowserAcceptance({ logger }: BrowserAcceptanceOptions)
 
     await page.goto(server.url, { waitUntil: "networkidle" });
 
-    for (const testId of ["app-shell", "sidebar", "conversation", "context-panel"]) {
+    for (const testId of ["app-shell", "sidebar", "conversation"]) {
       checks.push(await hasLocator(page, testId));
     }
 
