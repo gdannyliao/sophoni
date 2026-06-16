@@ -133,9 +133,22 @@ pub async fn run_agent_task(
             break;
         }
 
+        // 流式回调：把模型生成的文本 token 实时 emit 给前端。统一用 title="assistant"
+        // 表示「模型正在生成的文本」。前端把同一段 token 流累积成一个输出气泡；
+        // 轮次结束后，后端再发对应的轮次级事件（summary / tool_call）做定型。
+        let sink_ref: &dyn EventSink = sink;
+        let on_token = |delta: &str| {
+            sink_ref.emit(&AgentEvent {
+                kind: "token".into(),
+                title: "assistant".into(),
+                body: delta.to_string(),
+                tool_call_id: None,
+            });
+        };
+
         let response = tokio::time::timeout(
             PER_ROUND_TIMEOUT,
-            provider.complete(&system, &turns, &schemas),
+            provider.complete_streaming(&system, &turns, &schemas, &on_token),
         )
         .await;
 

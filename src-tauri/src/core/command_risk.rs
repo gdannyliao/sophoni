@@ -125,7 +125,7 @@ fn classify_standard(command: &str, workspace_root: &str) -> CommandAction {
     }
 }
 
-fn classify_relaxed(command: &str, workspace_root: &str) -> CommandAction {
+fn classify_relaxed(command: &str, _workspace_root: &str) -> CommandAction {
     let normalized = command.trim().to_lowercase();
 
     if normalized.is_empty() {
