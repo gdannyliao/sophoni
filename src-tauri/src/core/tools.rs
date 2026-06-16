@@ -457,8 +457,11 @@ impl ToolDispatcher {
     }
 
     async fn run_command(&self, call_id: &str, command: &str) -> AppResult<AgentToolResult> {
-        let workspace_root = self.fs.root().to_str().unwrap_or("");
-        let action = classify_command_with_level(command, workspace_root, self.risk_level);
+        let action = classify_command_with_level(
+            command,
+            self.fs.root().to_str().unwrap_or(""),
+            self.risk_level,
+        );
 
         let command_to_run = match action {
             CommandAction::Allow => command.to_string(),
