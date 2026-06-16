@@ -144,10 +144,10 @@ async fn run_agent_task(
 
     let (config, _provider) = AgentConfig::load()?;
     let risk_level = config.risk_level;
-    let workspace = config
-        .workspace_path
-        .clone()
-        .ok_or_else(|| AppError::Config("未选择工作区，请先打开工作区".into()))?;
+    let (workspace, workspace_mode) = match &config.workspace_path {
+        Some(path) => (path.clone(), core::tools::WorkspaceMode::Full),
+        None => ("/tmp/sophoni-chat".to_string(), core::tools::WorkspaceMode::ChatOnly),
+    };
     let provider = OpenAICompatibleProvider::new(config);
 
     let confirm_handler = Arc::new(TauriConfirmHandler {
@@ -156,7 +156,8 @@ async fn run_agent_task(
     });
     let tools = ToolDispatcher::new(PathBuf::from(&workspace))
         .with_risk_level(risk_level)
-        .with_confirm_handler(confirm_handler);
+        .with_confirm_handler(confirm_handler)
+        .with_workspace_mode(workspace_mode);
     let sink = AppEventSink { app };
 
     // 在 async 外创建 conversation（Storage/Connection 不是 Send，不能跨 await）

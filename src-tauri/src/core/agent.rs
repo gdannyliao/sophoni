@@ -39,8 +39,12 @@ fn command_description(level: super::command_risk::RiskLevel) -> String {
     }
 }
 
-fn system_prompt(level: super::command_risk::RiskLevel) -> String {
+fn system_prompt(level: super::command_risk::RiskLevel, mode: super::tools::WorkspaceMode) -> String {
     use super::command_risk::RiskLevel;
+
+    if mode == super::tools::WorkspaceMode::ChatOnly {
+        return "你是桌面工作区 Agent。当前为纯对话模式（未选择工作区），文件操作和命令执行不可用。你可以回答问题、生成代码片段、解释概念。如果用户需要文件操作，提示选择工作区。".to_string();
+    }
     let (run_cmd_line, file_ops_hint) = match level {
         RiskLevel::Standard => (
             "- run_command：执行安全命令（cargo test、cargo check、git status 等），验证代码改动。",
@@ -100,11 +104,11 @@ pub async fn run_agent_task(
     _schemas: Vec<AgentToolSchema>,
     conversation_id: uuid::Uuid,
 ) -> AppResult<AgentTaskResult> {
-    let system = SystemPrompt(system_prompt(tools.risk_level()));
+    let system = SystemPrompt(system_prompt(tools.risk_level(), tools.workspace_mode()));
     let mut turns: Vec<ConversationTurn> = vec![ConversationTurn::User { content: user_task }];
     let mut events: Vec<AgentEvent> = vec![];
     let mut file_changes: Vec<FileChange> = vec![];
-    let schemas = tool_schemas(tools.risk_level());
+    let schemas = tool_schemas(tools.risk_level(), tools.workspace_mode());
     let deadline = Instant::now() + OVERALL_TIMEOUT;
 
     // emit conversation_created 让前端立即更新 Sidebar
@@ -203,7 +207,10 @@ fn push(events: &mut Vec<AgentEvent>, sink: &dyn EventSink, event: AgentEvent) {
     events.push(event);
 }
 
-fn tool_schemas(level: super::command_risk::RiskLevel) -> Vec<AgentToolSchema> {
+fn tool_schemas(level: super::command_risk::RiskLevel, mode: super::tools::WorkspaceMode) -> Vec<AgentToolSchema> {
+    if mode == super::tools::WorkspaceMode::ChatOnly {
+        return vec![];
+    }
     vec![
         AgentToolSchema {
             name: "read_file",
