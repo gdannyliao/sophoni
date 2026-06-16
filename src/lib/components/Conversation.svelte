@@ -93,17 +93,19 @@
 
   <div class="messages" aria-label="任务会话流">
     {#each items as item}
-      {#if item.type === "user"}
-        <MessageBubble content={item.content} />
-      {:else if item.type === "thought"}
-        <ThoughtLine title={item.title} />
-      {:else if item.type === "command"}
-        <CommandCard command={item.command} exitCode={item.exitCode} stdout={item.stdout} stderr={item.stderr} />
-      {:else if item.type === "change"}
-        <ChangeNotice path={item.path} kind={item.kind} />
-      {:else if item.type === "error"}
-        <div class="error-card">{item.body}</div>
-      {/if}
+      <div class="agent-event" data-testid="agent-event">
+        {#if item.type === "user"}
+          <MessageBubble content={item.content} />
+        {:else if item.type === "thought"}
+          <ThoughtLine title={item.title} />
+        {:else if item.type === "command"}
+          <CommandCard command={item.command} exitCode={item.exitCode} stdout={item.stdout} stderr={item.stderr} />
+        {:else if item.type === "change"}
+          <ChangeNotice path={item.path} kind={item.kind} />
+        {:else if item.type === "error"}
+          <div class="error-card">{item.body}</div>
+        {/if}
+      </div>
     {/each}
     {#if summary}
       <div class="summary-card">
