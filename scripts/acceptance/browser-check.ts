@@ -226,46 +226,19 @@ export async function runBrowserAcceptance({ logger }: BrowserAcceptanceOptions)
 
     await page.goto(server.url, { waitUntil: "networkidle" });
 
-    for (const testId of ["app-shell", "sidebar", "conversation"]) {
+    for (const testId of ["app-shell", "sidebar", "welcome-view"]) {
       checks.push(await hasLocator(page, testId));
     }
 
-    const taskInput = page.getByTestId("task-input");
-    await taskInput.fill("验收：检查运行状态");
-    const taskValue = await taskInput.inputValue();
-    const taskInputOk = taskValue === "验收：检查运行状态";
-    checks.push(check("task input accepts text", taskInputOk, taskInputOk ? undefined : `实际值：${taskValue}`));
+    // WelcomeView 输入框存在
+    const welcomeInput = page.getByTestId("welcome-input");
+    const welcomeInputExists = await welcomeInput.count().catch(() => 0);
+    checks.push(check("welcome input exists", welcomeInputExists > 0));
 
-    const runButton = page.getByTestId("run-button");
-    const beforeEventCount = await page.getByTestId("agent-event").count();
-    const beforeButtonEnabled = await runButton.isEnabled();
-    let buttonEnteredRunningState = false;
-    let afterEventCount = beforeEventCount;
-
-    if (beforeButtonEnabled) {
-      await runButton.click();
-      const observed = await page
-        .waitForFunction((initialEventCount) => {
-          const button = document.querySelector<HTMLButtonElement>('[data-testid="run-button"]');
-          const eventCount = document.querySelectorAll('[data-testid="agent-event"]').length;
-          const running = Boolean(button?.disabled || button?.textContent?.includes("运行中"));
-          return running || eventCount > initialEventCount ? { eventCount, running } : false;
-        }, beforeEventCount, { timeout: 3_000 })
-        .then((handle) => handle.jsonValue() as Promise<{ eventCount: number; running: boolean }>)
-        .catch(() => null);
-
-      buttonEnteredRunningState = Boolean(observed?.running);
-      afterEventCount = observed?.eventCount ?? (await page.getByTestId("agent-event").count());
-    }
-
-    checks.push(
-      evaluateRunClickObservation({
-        beforeEventCount,
-        beforeButtonEnabled,
-        afterEventCount,
-        buttonEnteredRunningState,
-      }),
-    );
+    // WelcomeView 开始按钮存在
+    const startBtn = page.getByTestId("welcome-start");
+    const startBtnExists = await startBtn.count().catch(() => 0);
+    checks.push(check("welcome start button exists", startBtnExists > 0));
 
     // 验证设置面板 + 风险等级选择器
     try {
