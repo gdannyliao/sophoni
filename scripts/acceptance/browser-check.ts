@@ -288,13 +288,12 @@ export async function runBrowserAcceptance({ logger }: BrowserAcceptanceOptions)
       checks.push(check("settings panel opens", false, "设置面板交互失败"));
     }
 
-    // 验证工作区按钮存在
+    // 验证工作区区域存在
     try {
       const openCount = await page.getByTestId("workspace-open").count().catch(() => 0);
-      const switchCount = await page.getByTestId("workspace-switch").count().catch(() => 0);
-      checks.push(check("workspace button exists", openCount > 0 || switchCount > 0));
+      checks.push(check("workspace section exists", openCount > 0));
     } catch {
-      checks.push(check("workspace button exists", false, "工作区按钮未找到"));
+      checks.push(check("workspace section exists", false, "工作区区域未找到"));
     }
 
     await page.screenshot({ path: screenshotPath, fullPage: true });

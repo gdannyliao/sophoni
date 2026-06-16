@@ -69,9 +69,6 @@
 
   function handleWorkspaceChange(path: string) {
     workspacePath = path;
-    events = [];
-    fileChanges = [];
-    summary = "";
   }
 </script>
 

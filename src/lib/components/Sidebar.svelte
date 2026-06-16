@@ -41,7 +41,6 @@
     <div class="workspace-section">
       {#if workspacePath}
         <div class="workspace-path" title={workspacePath}>📁 {workspacePath}</div>
-        <button class="btn workspace-btn" data-testid="workspace-switch" on:click={selectWorkspace}>切换</button>
       {:else}
         <div class="workspace-empty">未选择工作区</div>
         <button class="btn workspace-btn" data-testid="workspace-open" on:click={selectWorkspace}>📁 打开工作区</button>
