@@ -6,7 +6,7 @@
   import SettingsPanel from "./lib/components/SettingsPanel.svelte";
   import ConfirmDialog from "./lib/components/ConfirmDialog.svelte";
   import WelcomeView from "./lib/components/WelcomeView.svelte";
-  import { open } from "@tauri-apps/plugin-dialog";
+  import { open, confirm } from "@tauri-apps/plugin-dialog";
   import { runAgentTask, cancelAgentTask, onAgentEvent, onCommandConfirm, resolveCommandConfirm, getWorkspacePath, setWorkspacePath, listConversations, getConversation, deleteConversation } from "./lib/api";
   import type { UnlistenFn } from "@tauri-apps/api/event";
   import type { AgentEvent, CommandConfirmRequest, ConversationSummary, FileChange } from "./lib/types";
@@ -148,7 +148,8 @@
   }
 
   async function handleDeleteConversation(id: string) {
-    if (!confirm("确定删除此会话？")) return;
+    const confirmed = await confirm("确定删除此会话？", { title: "删除会话", kind: "warning" });
+    if (!confirmed) return;
     try {
       await deleteConversation(id);
       conversations = conversations.filter((c) => c.id !== id);
