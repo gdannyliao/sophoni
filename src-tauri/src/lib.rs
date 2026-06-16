@@ -7,9 +7,10 @@ use std::sync::Arc;
 
 use core::agent::{run_agent_task as run_agent_task_inner, run_mock_agent_task, AgentTaskResult, EventSink};
 use core::command_risk::{classify_command, CommandRisk, RiskLevel};
-use core::domain::{AgentConfig, AgentEvent, ConfigStatus, SystemPrompt};
+use core::domain::{AgentConfig, AgentEvent, ConfigStatus, Conversation, ConversationSummary, SystemPrompt};
 use core::errors::AppError;
 use core::provider::OpenAICompatibleProvider;
+use core::storage::Storage;
 use core::tools::{ConfirmHandler, ToolDispatcher};
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::{oneshot, Mutex};
@@ -17,6 +18,7 @@ use tokio::sync::{oneshot, Mutex};
 struct AppState {
     cancel: Arc<AtomicBool>,
     confirm_pending: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>,
+    storage: Arc<Mutex<Storage>>,
 }
 
 struct AppEventSink {
@@ -108,6 +110,18 @@ fn set_risk_level(level: String) -> Result<(), AppError> {
 }
 
 #[tauri::command]
+fn get_workspace_path() -> Result<Option<String>, AppError> {
+    let (config, _) = AgentConfig::load()?;
+    Ok(config.workspace_path)
+}
+
+#[tauri::command]
+fn set_workspace_path(path: String) -> Result<(), AppError> {
+    core::config::save_workspace_path(&path)?;
+    Ok(())
+}
+
+#[tauri::command]
 async fn resolve_command_confirm(
     state: State<'_, AppState>,
     request_id: String,
@@ -117,18 +131,6 @@ async fn resolve_command_confirm(
     if let Some(tx) = pending.remove(&request_id) {
         let _ = tx.send(allowed);
     }
-    Ok(())
-}
-
-#[tauri::command]
-fn get_workspace_path() -> Result<Option<String>, AppError> {
-    let (config, _) = AgentConfig::load()?;
-    Ok(config.workspace_path)
-}
-
-#[tauri::command]
-fn set_workspace_path(path: String) -> Result<(), AppError> {
-    core::config::save_workspace_path(&path)?;
     Ok(())
 }
 
@@ -157,7 +159,16 @@ async fn run_agent_task(
         .with_confirm_handler(confirm_handler);
     let sink = AppEventSink { app };
 
-    run_agent_task_inner(
+    // 在 async 外创建 conversation（Storage/Connection 不是 Send，不能跨 await）
+    let conversation = {
+        let home = dirs::home_dir().ok_or_else(|| AppError::Config("no HOME".into()))?;
+        let db_path = home.join(".config/sophoni/sophoni.db");
+        let storage = Storage::open(&db_path)?;
+        let ws = storage.get_or_create_workspace(&workspace)?;
+        storage.create_conversation(&ws.id, &uuid::Uuid::new_v4().to_string())?
+    };
+
+    let result = run_agent_task_inner(
         Box::new(provider),
         &tools,
         &sink,
@@ -165,8 +176,50 @@ async fn run_agent_task(
         SystemPrompt(String::new()),
         prompt,
         vec![],
+        conversation.id,
     )
-    .await
+    .await?;
+
+    // 任务结束后写 DB（同步，不跨 await）
+    {
+        let home = dirs::home_dir().ok_or_else(|| AppError::Config("no HOME".into()))?;
+        let db_path = home.join(".config/sophoni/sophoni.db");
+        let storage = Storage::open(&db_path)?;
+        let events_json = serde_json::to_string(&result.events).unwrap_or_else(|_| "[]".to_string());
+        let _ = storage.update_conversation_events(&conversation.id, &events_json);
+        let title = if result.summary.is_empty() {
+            conversation.id.to_string()
+        } else {
+            result.summary.clone()
+        };
+        let _ = storage.update_conversation_title(&conversation.id, &title);
+    }
+
+    Ok(result)
+}
+
+#[tauri::command]
+async fn list_conversations(
+    state: State<'_, AppState>,
+) -> Result<Vec<ConversationSummary>, AppError> {
+    let storage = state.storage.lock().await;
+    let (config, _) = AgentConfig::load()?;
+    let workspace = config
+        .workspace_path
+        .ok_or_else(|| AppError::Config("未选择工作区".into()))?;
+    let ws = storage.get_or_create_workspace(&workspace)?;
+    Ok(storage.list_conversations(&ws.id)?)
+}
+
+#[tauri::command]
+async fn get_conversation(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Conversation, AppError> {
+    let storage = state.storage.lock().await;
+    let uuid = uuid::Uuid::parse_str(&id)
+        .map_err(|e| AppError::Config(format!("无效会话 ID: {e}")))?;
+    Ok(storage.get_conversation(&uuid)?)
 }
 
 #[tauri::command]
@@ -176,12 +229,17 @@ fn cancel_agent_task(state: State<'_, AppState>) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let home = dirs::home_dir().expect("no HOME directory");
+    let db_path = home.join(".config/sophoni/sophoni.db");
+    let storage = Storage::open(&db_path).expect("failed to open DB");
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
             cancel: Arc::new(AtomicBool::new(false)),
             confirm_pending: Arc::new(Mutex::new(HashMap::new())),
+            storage: Arc::new(Mutex::new(storage)),
         })
         .invoke_handler(tauri::generate_handler![
             get_app_status,
@@ -195,9 +253,8 @@ pub fn run() {
             resolve_command_confirm,
             get_workspace_path,
             set_workspace_path,
-            get_risk_level,
-            set_risk_level,
-            resolve_command_confirm,
+            list_conversations,
+            get_conversation,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

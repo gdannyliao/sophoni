@@ -98,6 +98,7 @@ pub async fn run_agent_task(
     _system: SystemPrompt,
     user_task: String,
     _schemas: Vec<AgentToolSchema>,
+    conversation_id: uuid::Uuid,
 ) -> AppResult<AgentTaskResult> {
     let system = SystemPrompt(system_prompt(tools.risk_level()));
     let mut turns: Vec<ConversationTurn> = vec![ConversationTurn::User { content: user_task }];
@@ -105,6 +106,18 @@ pub async fn run_agent_task(
     let mut file_changes: Vec<FileChange> = vec![];
     let schemas = tool_schemas(tools.risk_level());
     let deadline = Instant::now() + OVERALL_TIMEOUT;
+
+    // emit conversation_created 让前端立即更新 Sidebar
+    push(
+        &mut events,
+        sink,
+        AgentEvent {
+            kind: "conversation_created".into(),
+            title: conversation_id.to_string(),
+            body: conversation_id.to_string(),
+            tool_call_id: None,
+        },
+    );
 
     for _round in 0..MAX_ROUNDS {
         if cancel.load(Ordering::Relaxed) {
@@ -581,6 +594,7 @@ mod tests {
             SystemPrompt("sys".into()),
             "update readme".into(),
             empty_schemas(),
+            uuid::Uuid::new_v4(),
         )
         .await
         .unwrap();
@@ -613,6 +627,7 @@ mod tests {
             SystemPrompt("s".into()),
             "t".into(),
             empty_schemas(),
+            uuid::Uuid::new_v4(),
         )
         .await
         .unwrap();
@@ -647,6 +662,7 @@ mod tests {
             SystemPrompt("s".into()),
             "t".into(),
             empty_schemas(),
+            uuid::Uuid::new_v4(),
         )
         .await
         .unwrap();
@@ -677,6 +693,7 @@ mod tests {
             SystemPrompt("s".into()),
             "t".into(),
             empty_schemas(),
+            uuid::Uuid::new_v4(),
         )
         .await
         .unwrap();
@@ -734,6 +751,7 @@ mod tests {
             SystemPrompt(String::new()),
             task,
             vec![],
+            uuid::Uuid::new_v4(),
         )
         .await
         .expect("run_agent_task 出错");
@@ -815,6 +833,7 @@ mod tests {
             SystemPrompt(String::new()),
             task,
             vec![],
+            uuid::Uuid::new_v4(),
         )
         .await
         .expect("run_agent_task 出错");
@@ -928,6 +947,7 @@ mod tests {
             SystemPrompt(String::new()),
             task,
             vec![],
+            uuid::Uuid::new_v4(),
         )
         .await
         .expect("run_agent_task 出错");
