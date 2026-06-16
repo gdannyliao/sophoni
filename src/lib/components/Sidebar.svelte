@@ -44,9 +44,7 @@
       {/each}
     </div>
     <div class="workspace-section">
-      {#if workspacePath}
-        <div class="workspace-path" title={workspacePath}>📁 {workspacePath}</div>
-      {:else}
+      {#if !workspacePath}
         <div class="workspace-empty">未选择工作区</div>
         <button class="btn workspace-btn" data-testid="workspace-open" on:click={onSelectWorkspace}>📁 打开工作区</button>
       {/if}
