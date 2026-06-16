@@ -199,6 +199,7 @@ pub struct AgentConfig {
     pub api_key: String,
     pub model: String,
     pub base_url: String,
+    pub risk_level: super::command_risk::RiskLevel,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -113,6 +113,7 @@ fn try_parse_multi_provider(content: &str) -> AppResult<Option<(AgentConfig, Str
             api_key: entry.api_key,
             model: entry.model.unwrap_or(defaults.model),
             base_url: entry.base_url.unwrap_or(defaults.base_url),
+            risk_level: parse_risk_level(&content),
         },
         active,
     )))
@@ -143,7 +144,61 @@ fn try_parse_legacy(content: &str) -> AppResult<AgentConfig> {
         base_url: legacy
             .base_url
             .unwrap_or_else(|| "https://open.bigmodel.cn/api/paas/v4".to_string()),
+        risk_level: parse_risk_level(content),
     })
+}
+
+fn parse_risk_level(content: &str) -> super::command_risk::RiskLevel {
+    use super::command_risk::RiskLevel;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if let Some(val) = trimmed.strip_prefix("risk_level") {
+            let val = val.trim().trim_start_matches('=').trim().trim_matches('"');
+            return match val {
+                "relaxed" => RiskLevel::Relaxed,
+                "unrestricted" => RiskLevel::Unrestricted,
+                _ => RiskLevel::Standard,
+            };
+        }
+    }
+    RiskLevel::Standard
+}
+
+pub fn save_risk_level(level: super::command_risk::RiskLevel) -> AppResult<()> {
+    let path = config_path()?;
+    let content = if path.exists() {
+        fs::read_to_string(&path)?
+    } else {
+        String::new()
+    };
+
+    let level_str = match level {
+        super::command_risk::RiskLevel::Standard => "standard",
+        super::command_risk::RiskLevel::Relaxed => "relaxed",
+        super::command_risk::RiskLevel::Unrestricted => "unrestricted",
+    };
+
+    let mut lines: Vec<String> = content.lines().map(String::from).collect();
+    let mut found = false;
+    for line in lines.iter_mut() {
+        if line.trim_start().starts_with("risk_level") {
+            *line = format!("risk_level = \"{level_str}\"");
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        lines.push(format!("risk_level = \"{level_str}\""));
+    }
+
+    let new_content = lines.join("\n") + "\n";
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&path, new_content)?;
+    let _ = tighten_permissions(&path);
+    Ok(())
 }
 
 fn config_path() -> AppResult<PathBuf> {
