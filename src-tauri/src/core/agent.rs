@@ -41,10 +41,19 @@ fn command_description(level: super::command_risk::RiskLevel) -> String {
 
 fn system_prompt(level: super::command_risk::RiskLevel) -> String {
     use super::command_risk::RiskLevel;
-    let run_cmd_line = match level {
-        RiskLevel::Standard => "- run_command：执行安全命令（cargo test、cargo check、git status 等），验证代码改动。",
-        RiskLevel::Relaxed => "- run_command：执行命令（测试、构建、安装依赖、git 操作等）。高危命令会请求用户确认。",
-        RiskLevel::Unrestricted => "- run_command：执行命令（测试、构建、文件操作、安装依赖等，工作区内不限）。",
+    let (run_cmd_line, file_ops_hint) = match level {
+        RiskLevel::Standard => (
+            "- run_command：执行安全命令（cargo test、cargo check、git status 等），验证代码改动。",
+            "",
+        ),
+        RiskLevel::Relaxed => (
+            "- run_command：执行命令（测试、构建、安装依赖、git 操作等）。高危命令会请求用户确认。",
+            "\n10. 用户要求删除/移动/复制文件时，用 run_command 执行 rm/mv/cp 命令。高危操作会弹窗请求用户确认，确认后自动执行。",
+        ),
+        RiskLevel::Unrestricted => (
+            "- run_command：执行命令（测试、构建、文件操作、安装依赖等，工作区内不限）。",
+            "\n10. 用户要求删除/移动/复制文件时，用 run_command 执行 rm/mv/cp 命令。工作区内路径直接执行，工作区外路径会请求用户确认。",
+        ),
     };
     format!("你是桌面工作区 Agent。只能操作工作区内文件。
 
@@ -68,7 +77,7 @@ fn system_prompt(level: super::command_risk::RiskLevel) -> String {
 6. 改完代码后，用 run_command 跑 cargo check 或 cargo test 验证改动是否正确。如果命令失败，读 stderr 定位问题并修正。
 7. 验收时优先用 read_acceptance_report 看 report.json，重点检查 ok 和 failureSummary；失败或信息不足时再用 read_runtime_log 查看相关日志。
 8. 不要在回复里直接给文件内容，通过工具操作。
-9. 完成任务后给出简短总结。")
+9. 完成任务后给出简短总结。{file_ops_hint}")
 }
 const PER_ROUND_TIMEOUT: Duration = Duration::from_secs(30);
 const OVERALL_TIMEOUT: Duration = Duration::from_secs(120);
