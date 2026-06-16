@@ -1,12 +1,14 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use chrono::Utc;
 use uuid::Uuid;
 use walkdir::WalkDir;
 
 use super::acceptance::{list_acceptance_runs, read_acceptance_report, read_runtime_log};
-use super::command_risk::{classify_command, shell_words, CommandRisk};
+use super::command_risk::{classify_command_with_level, shell_words, CommandAction, RiskLevel};
 use super::domain::{
     AgentToolArgs, AgentToolCall, AgentToolName, AgentToolResult, ChangeKind, FileChange,
 };
@@ -33,15 +35,34 @@ const IGNORED_DIRS: &[&str] = &[
     "__pycache__",
 ];
 
+#[async_trait]
+pub trait ConfirmHandler: Send + Sync {
+    async fn confirm(&self, command: &str, reason: &str) -> bool;
+}
+
 pub struct ToolDispatcher {
     fs: WorkspaceFs,
+    risk_level: RiskLevel,
+    confirm_handler: Option<Arc<dyn ConfirmHandler>>,
 }
 
 impl ToolDispatcher {
     pub fn new(root: PathBuf) -> Self {
         Self {
             fs: WorkspaceFs::new(root),
+            risk_level: RiskLevel::Standard,
+            confirm_handler: None,
         }
+    }
+
+    pub fn with_risk_level(mut self, level: RiskLevel) -> Self {
+        self.risk_level = level;
+        self
+    }
+
+    pub fn with_confirm_handler(mut self, handler: Arc<dyn ConfirmHandler>) -> Self {
+        self.confirm_handler = Some(handler);
+        self
     }
 
     pub async fn dispatch(&self, call: &AgentToolCall) -> AppResult<AgentToolResult> {
@@ -436,17 +457,38 @@ impl ToolDispatcher {
     }
 
     async fn run_command(&self, call_id: &str, command: &str) -> AppResult<AgentToolResult> {
-        let risk = classify_command(command, "");
-        if risk == CommandRisk::High {
-            return Ok(tool_error(
-                call_id,
-                &format!(
-                    "命令被拒绝(高风险): {command}\n只允许安全的只读命令(cargo test/check/build/clippy、git status/diff/log、ls、rg、tsc、pnpm test/build/check 等)。"
-                ),
-            ));
-        }
+        let workspace_root = self.fs.root().to_str().unwrap_or("");
+        let action = classify_command_with_level(command, workspace_root, self.risk_level);
 
-        let argv = match shell_words(command) {
+        let command_to_run = match action {
+            CommandAction::Allow => command.to_string(),
+            CommandAction::Deny(reason) => {
+                return Ok(tool_error(
+                    call_id,
+                    &format!("命令被拒绝({reason}): {command}"),
+                ));
+            }
+            CommandAction::RequireConfirm => match &self.confirm_handler {
+                None => {
+                    return Ok(tool_error(
+                        call_id,
+                        &format!("命令需要确认但无确认处理器: {command}"),
+                    ));
+                }
+                Some(handler) => {
+                    let allowed = handler.confirm(command, "高风险命令").await;
+                    if !allowed {
+                        return Ok(tool_error(
+                            call_id,
+                            &format!("命令被用户拒绝: {command}"),
+                        ));
+                    }
+                    command.to_string()
+                }
+            },
+        };
+
+        let argv = match shell_words(&command_to_run) {
             v if v.is_empty() => return Ok(tool_error(call_id, "空命令")),
             v => v,
         };
