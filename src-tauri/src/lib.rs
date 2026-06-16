@@ -141,6 +141,7 @@ async fn run_agent_task(
     prompt: String,
 ) -> Result<AgentTaskResult, AppError> {
     state.cancel.store(false, Ordering::Relaxed);
+    tracing::info!(%prompt, "ipc run_agent_task");
 
     let (config, _provider) = AgentConfig::load()?;
     let risk_level = config.risk_level;
@@ -230,6 +231,14 @@ fn cancel_agent_task(state: State<'_, AppState>) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 初始化 tracing：默认 INFO 级别输出到 stderr，可用 RUST_LOG 环境变量覆盖
+    tracing_subscriber::fmt::Subscriber::builder()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
+
     let home = dirs::home_dir().expect("no HOME directory");
     let db_path = home.join(".config/sophoni/sophoni.db");
     let storage = Storage::open(&db_path).expect("failed to open DB");

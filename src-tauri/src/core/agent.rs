@@ -2,6 +2,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use tracing::{info, warn};
+
 use chrono::Utc;
 use uuid::Uuid;
 
@@ -104,6 +106,8 @@ pub async fn run_agent_task(
     _schemas: Vec<AgentToolSchema>,
     conversation_id: uuid::Uuid,
 ) -> AppResult<AgentTaskResult> {
+    let task_start = Instant::now();
+    info!(prompt = %user_task, "agent task started");
     let system = SystemPrompt(system_prompt(tools.risk_level(), tools.workspace_mode()));
     let mut turns: Vec<ConversationTurn> = vec![ConversationTurn::User { content: user_task }];
     let mut events: Vec<AgentEvent> = vec![];
@@ -125,10 +129,12 @@ pub async fn run_agent_task(
 
     for round in 0..MAX_ROUNDS {
         if cancel.load(Ordering::Relaxed) {
+            warn!("agent: 用户取消");
             push(&mut events, sink, error_event("用户取消了任务"));
             break;
         }
         if Instant::now() >= deadline {
+            warn!("agent: 达到整体超时(120s)");
             push(&mut events, sink, error_event("达到整体超时(120s)"));
             break;
         }
@@ -160,7 +166,7 @@ pub async fn run_agent_task(
         let round_elapsed_ms = round_start.elapsed().as_millis();
         let round_text_val = round_text.lock().map(|s| s.clone()).unwrap_or_default();
         // 后端日志：每轮耗时，便于定位延迟瓶颈。
-        eprintln!("[agent] round {}: {}ms", round + 1, round_elapsed_ms);
+        info!(round = round + 1, elapsed_ms = round_elapsed_ms, "agent round");
 
         let calls = match response {
             Ok(Ok(ProviderResponse::FinalAnswer(text))) => {
@@ -197,6 +203,7 @@ pub async fn run_agent_task(
             }
             Err(_elapsed) => {
                 emit_round_timing(&mut events, sink, round + 1, PER_ROUND_TIMEOUT.as_millis(), "单轮超时");
+                warn!(round = round + 1, "agent: 单轮超时(30s)");
                 push(&mut events, sink, error_event("单轮超时(30s)"));
                 break;
             }
@@ -237,6 +244,8 @@ pub async fn run_agent_task(
         .find(|e| e.kind == "summary")
         .map(|e| e.body.clone())
         .unwrap_or_else(|| "任务未正常完成,以上是已执行的步骤。".into());
+
+    info!(total_ms = task_start.elapsed().as_millis(), "agent task done");
 
     Ok(AgentTaskResult {
         summary,
