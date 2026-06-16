@@ -884,4 +884,71 @@ mod tests {
             edit_calls
         );
     }
+
+    // ── Unrestricted 等级 live 测试：真实 LLM 尝试用 rm 删文件 ──
+    // 验证动态 prompt 生效：Unrestricted 模式下模型知道可以用 run_command 执行 rm，
+    // 而不是说"我没有删除工具"。用 `cargo test -- --ignored run_command_unrestricted_rm` 运行。
+
+    #[tokio::test]
+    #[ignore]
+    async fn run_command_unrestricted_rm_uses_command_not_refuse() {
+        use super::super::command_risk::RiskLevel;
+        use super::super::domain::{AgentConfig, AgentEvent, SystemPrompt};
+        use super::super::provider::OpenAICompatibleProvider;
+        use super::super::tools::ToolDispatcher;
+        use super::{run_agent_task, EventSink};
+
+        let (config, provider_name) = AgentConfig::load().expect("AgentConfig 未配置");
+        eprintln!("使用真实 Provider: {provider_name} / {}", config.model);
+
+        let root = std::env::temp_dir().join(format!("sophoni-rm-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("junk.txt"), "delete me\n").unwrap();
+
+        let provider: Box<dyn super::super::provider::AgentProvider> =
+            Box::new(OpenAICompatibleProvider::new(config));
+        let tools = ToolDispatcher::new(root.clone())
+            .with_risk_level(RiskLevel::Unrestricted);
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+
+        struct Collector(std::sync::Mutex<Vec<AgentEvent>>);
+        impl EventSink for Collector {
+            fn emit(&self, event: &AgentEvent) {
+                self.0.lock().unwrap().push(event.clone());
+            }
+        }
+        let sink = Collector(std::sync::Mutex::new(Vec::new()));
+
+        let task = "删除工作区里的 junk.txt 文件。".to_string();
+        let result = run_agent_task(
+            provider,
+            &tools,
+            &sink,
+            &cancel,
+            SystemPrompt(String::new()),
+            task,
+            vec![],
+        )
+        .await
+        .expect("run_agent_task 出错");
+        eprintln!("Agent summary: {}", result.summary);
+
+        let events = sink.0.lock().unwrap();
+        eprintln!("收到 {} 个事件", events.len());
+        for ev in events.iter() {
+            eprintln!("  [{}] {}", ev.kind, ev.title);
+        }
+
+        // 核心断言：Agent 用 run_command 调了 rm（而非说"我没有删除工具"）
+        let invoked_rm = events
+            .iter()
+            .any(|e| e.kind == "tool_call" && e.title.starts_with("run_command: rm"));
+        assert!(
+            invoked_rm,
+            "Agent 没有通过 run_command 执行 rm 删除文件。summary: {}",
+            result.summary
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
