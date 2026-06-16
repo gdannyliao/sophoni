@@ -1,10 +1,11 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import Sidebar from "./lib/components/Sidebar.svelte";
   import Conversation from "./lib/components/Conversation.svelte";
   import ReviewView from "./lib/components/ReviewView.svelte";
   import SettingsPanel from "./lib/components/SettingsPanel.svelte";
   import ConfirmDialog from "./lib/components/ConfirmDialog.svelte";
-  import { runAgentTask, cancelAgentTask, onAgentEvent, onCommandConfirm, resolveCommandConfirm } from "./lib/api";
+  import { runAgentTask, cancelAgentTask, onAgentEvent, onCommandConfirm, resolveCommandConfirm, getWorkspacePath } from "./lib/api";
   import type { UnlistenFn } from "@tauri-apps/api/event";
   import type { AgentEvent, CommandConfirmRequest, FileChange } from "./lib/types";
 
@@ -19,10 +20,21 @@
   let showSettings = false;
   let sidebarCollapsed = false;
   let pendingConfirm: CommandConfirmRequest | null = null;
+  let workspacePath: string | null = null;
 
-  const WORKSPACE_ROOT = "/tmp/sophoni";
+  onMount(async () => {
+    try {
+      workspacePath = await getWorkspacePath();
+    } catch {
+      workspacePath = null;
+    }
+  });
 
   async function runDemo(task: string) {
+    if (!workspacePath) {
+      events = [...events, { kind: "error", title: "未选择工作区", body: "请先点击左侧打开工作区", toolCallId: undefined }];
+      return;
+    }
     running = true;
     events = [];
     fileChanges = [];
@@ -30,7 +42,7 @@
     try {
       unlisten = await onAgentEvent((e) => { events = [...events, e]; });
       confirmUnlisten = await onCommandConfirm((req) => { pendingConfirm = req; });
-      const result = await runAgentTask(WORKSPACE_ROOT, task || "读 README.md 并加一行注释");
+      const result = await runAgentTask(task || "读 README.md 并加一行注释");
       fileChanges = result.fileChanges;
       summary = result.summary;
     } catch (e) {
@@ -54,6 +66,13 @@
       pendingConfirm = null;
     }
   }
+
+  function handleWorkspaceChange(path: string) {
+    workspacePath = path;
+    events = [];
+    fileChanges = [];
+    summary = "";
+  }
 </script>
 
 {#if view === "review"}
@@ -64,13 +83,15 @@
       collapsed={sidebarCollapsed}
       onToggleCollapse={() => (sidebarCollapsed = !sidebarCollapsed)}
       onOpenSettings={() => (showSettings = true)}
+      {workspacePath}
+      onWorkspaceChange={handleWorkspaceChange}
     />
     <Conversation
       {events}
       {summary}
       bind:prompt
       {running}
-      workspacePath={WORKSPACE_ROOT}
+      workspacePath={workspacePath ?? "未选择工作区"}
       changeCount={fileChanges.length}
       onRun={runDemo}
       onCancel={cancel}
