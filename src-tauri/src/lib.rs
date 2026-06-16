@@ -160,13 +160,23 @@ async fn run_agent_task(
         .with_workspace_mode(workspace_mode);
     let sink = AppEventSink { app };
 
-    // 在 async 外创建 conversation（Storage/Connection 不是 Send，不能跨 await）
-    let conversation = {
+    // 在 async 外创建 conversation + 读历史记忆（Storage/Connection 不是 Send，不能跨 await）
+    let (conversation, memory_context, existing_categories) = {
         let home = dirs::home_dir().ok_or_else(|| AppError::Config("no HOME".into()))?;
         let db_path = home.join(".config/sophoni/sophoni.db");
         let storage = Storage::open(&db_path)?;
         let ws = storage.get_or_create_workspace(&workspace)?;
-        storage.create_conversation(&ws.id, &uuid::Uuid::new_v4().to_string())?
+        // 读历史记忆
+        let memories = storage.list_conversation_memories(&ws.id)?;
+        let memory_context = core::agent::build_memory_context(&memories);
+        let existing_categories: Vec<String> = memories
+            .iter()
+            .filter_map(|m| m.category.clone())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        let conv = storage.create_conversation(&ws.id, &uuid::Uuid::new_v4().to_string())?;
+        (conv, memory_context, existing_categories)
     };
 
     let result = run_agent_task_inner(
@@ -178,22 +188,30 @@ async fn run_agent_task(
         prompt,
         vec![],
         conversation.id,
+        memory_context,
+        existing_categories,
     )
     .await?;
 
-    // 任务结束后写 DB（同步，不跨 await）
+    // 任务结束后写 DB（同步，不跨 await）+ 解析 category
     {
         let home = dirs::home_dir().ok_or_else(|| AppError::Config("no HOME".into()))?;
         let db_path = home.join(".config/sophoni/sophoni.db");
         let storage = Storage::open(&db_path)?;
         let events_json = serde_json::to_string(&result.events).unwrap_or_else(|_| "[]".to_string());
         let _ = storage.update_conversation_events(&conversation.id, &events_json);
-        let title = if result.summary.is_empty() {
+
+        // 解析 category：summary 第一行 [category: xxx]
+        let (category, clean_summary) = core::agent::parse_category(&result.summary);
+        let title = if clean_summary.is_empty() {
             conversation.id.to_string()
         } else {
-            result.summary.clone()
+            clean_summary.clone()
         };
         let _ = storage.update_conversation_title(&conversation.id, &title);
+        if let Some(cat) = &category {
+            let _ = storage.update_conversation_category(&conversation.id, cat);
+        }
     }
 
     Ok(result)

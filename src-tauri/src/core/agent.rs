@@ -39,12 +39,24 @@ fn command_description(level: super::command_risk::RiskLevel) -> String {
     }
 }
 
-fn system_prompt(level: super::command_risk::RiskLevel, mode: super::tools::WorkspaceMode) -> String {
+fn system_prompt(
+    level: super::command_risk::RiskLevel,
+    mode: super::tools::WorkspaceMode,
+    existing_categories: &[String],
+) -> String {
     use super::command_risk::RiskLevel;
 
     if mode == super::tools::WorkspaceMode::ChatOnly {
         return "你是桌面工作区 Agent。当前为纯对话模式（未选择工作区），文件操作和命令执行不可用。你可以回答问题、生成代码片段、解释概念。如果用户需要文件操作，提示选择工作区。".to_string();
     }
+    let category_rule = if existing_categories.is_empty() {
+        "
+10. 任务完成后的总结，第一行必须是分类标签，格式 [category: 标签名]。标签用 2-4 个字概括任务类型（如'编译修复'、'依赖管理'、'文档更新'）。从第二行开始写总结。".to_string()
+    } else {
+        format!("
+10. 任务完成后的总结，第一行必须是分类标签，格式 [category: 标签名]。已有类别：{}。优先复用已有类别，只在新任务类型不属于任何已有类别时才创建新类别。标签用 2-4 个字。从第二行开始写总结。", existing_categories.join("、"))
+    };
+
     let (run_cmd_line, file_ops_hint) = match level {
         RiskLevel::Standard => (
             "- run_command：执行安全命令（cargo test、cargo check、git status 等），验证代码改动。",
@@ -83,6 +95,43 @@ fn system_prompt(level: super::command_risk::RiskLevel, mode: super::tools::Work
 8. 不要在回复里直接给文件内容，通过工具操作。
 9. 完成任务后给出简短总结。{file_ops_hint}")
 }
+
+pub fn parse_category(text: &str) -> (Option<String>, String) {
+    let first_line = text.lines().next().unwrap_or("");
+    if let Some(rest) = first_line.trim().strip_prefix("[category:") {
+        let category = rest.trim_end_matches(']').trim().to_string();
+        if !category.is_empty() {
+            let clean = text.lines().skip(1).collect::<Vec<_>>().join("\n");
+            return (Some(category), clean.trim().to_string());
+        }
+    }
+    (None, text.to_string())
+}
+
+pub fn build_memory_context(memories: &[super::domain::ConversationMemory]) -> String {
+    use std::collections::BTreeMap;
+    if memories.is_empty() {
+        return String::new();
+    }
+    let mut by_category: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+    for m in memories {
+        let cat = m.category.as_deref().unwrap_or("其他");
+        by_category.entry(cat.to_string()).or_default().push(&m.summary);
+    }
+    let mut text = String::from("## 历史任务记忆\n\n");
+    for (category, summaries) in &by_category {
+        text.push_str(&format!("### {category}\n"));
+        for s in summaries {
+            text.push_str(&format!("- {s}\n"));
+        }
+        text.push('\n');
+    }
+    if let Some(last) = memories.last() {
+        text.push_str(&format!("### 最近任务\n- {}\n", last.summary));
+    }
+    text
+}
+
 const PER_ROUND_TIMEOUT: Duration = Duration::from_secs(30);
 const OVERALL_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -103,9 +152,18 @@ pub async fn run_agent_task(
     user_task: String,
     _schemas: Vec<AgentToolSchema>,
     conversation_id: uuid::Uuid,
+    memory_context: String,
+    existing_categories: Vec<String>,
 ) -> AppResult<AgentTaskResult> {
-    let system = SystemPrompt(system_prompt(tools.risk_level(), tools.workspace_mode()));
-    let mut turns: Vec<ConversationTurn> = vec![ConversationTurn::User { content: user_task }];
+    let system = SystemPrompt(system_prompt(tools.risk_level(), tools.workspace_mode(), &existing_categories));
+    let mut turns: Vec<ConversationTurn> = vec![];
+    if !memory_context.is_empty() {
+        turns.push(ConversationTurn::Assistant {
+            content: Some(memory_context.clone()),
+            tool_calls: vec![],
+        });
+    }
+    turns.push(ConversationTurn::User { content: user_task });
     let mut events: Vec<AgentEvent> = vec![];
     let mut file_changes: Vec<FileChange> = vec![];
     let schemas = tool_schemas(tools.risk_level(), tools.workspace_mode());
@@ -615,6 +673,8 @@ mod tests {
             "update readme".into(),
             empty_schemas(),
             uuid::Uuid::new_v4(),
+            String::new(),
+            vec![],
         )
         .await
         .unwrap();
@@ -648,6 +708,8 @@ mod tests {
             "t".into(),
             empty_schemas(),
             uuid::Uuid::new_v4(),
+            String::new(),
+            vec![],
         )
         .await
         .unwrap();
@@ -683,6 +745,8 @@ mod tests {
             "t".into(),
             empty_schemas(),
             uuid::Uuid::new_v4(),
+            String::new(),
+            vec![],
         )
         .await
         .unwrap();
@@ -714,6 +778,8 @@ mod tests {
             "t".into(),
             empty_schemas(),
             uuid::Uuid::new_v4(),
+            String::new(),
+            vec![],
         )
         .await
         .unwrap();
@@ -772,6 +838,8 @@ mod tests {
             task,
             vec![],
             uuid::Uuid::new_v4(),
+            String::new(),
+            vec![],
         )
         .await
         .expect("run_agent_task 出错");
@@ -854,6 +922,8 @@ mod tests {
             task,
             vec![],
             uuid::Uuid::new_v4(),
+            String::new(),
+            vec![],
         )
         .await
         .expect("run_agent_task 出错");
@@ -968,6 +1038,8 @@ mod tests {
             task,
             vec![],
             uuid::Uuid::new_v4(),
+            String::new(),
+            vec![],
         )
         .await
         .expect("run_agent_task 出错");
