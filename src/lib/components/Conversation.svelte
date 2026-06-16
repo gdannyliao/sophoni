@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { marked } from "marked";
   import type { AgentEvent } from "../types";
   import MessageBubble from "./MessageBubble.svelte";
   import ThoughtLine from "./ThoughtLine.svelte";
@@ -84,6 +85,10 @@
     return items;
   }
 
+  function renderMarkdown(text: string): string {
+    return marked.parse(text, { breaks: true, async: false }) as string;
+  }
+
   // token 到达或事件变化时，自动滚到底部，保证流式输出始终可见。
   // streamingText 经 App.svelte 的 rAF 节流后每帧最多变一次，滚动开销可控。
   $: if (streamingText && messagesEl) {
@@ -127,14 +132,14 @@
     {/each}
     {#if streamingText}
       <div class="streaming-bubble" data-testid="streaming-bubble" aria-live="polite">
-        <span class="streaming-text">{streamingText}</span>
+        <span class="markdown-body">{@html renderMarkdown(streamingText)}</span>
         <span class="streaming-cursor" aria-hidden="true">▍</span>
       </div>
     {/if}
     {#if summary}
       <div class="summary-card">
         <div class="summary-label">结果摘要</div>
-        <div>{summary}</div>
+        <div class="markdown-body">{@html renderMarkdown(summary)}</div>
       </div>
     {/if}
   </div>
@@ -204,6 +209,40 @@
     border-radius: var(--radius-md);
     padding: var(--space-3) var(--space-4);
   }
+  .markdown-body {
+    font-size: 14px;
+    line-height: 1.7;
+    color: var(--text-primary);
+  }
+  .markdown-body :global(p) { margin: 0 0 var(--space-2) 0; }
+  .markdown-body :global(p:last-child) { margin-bottom: 0; }
+  .markdown-body :global(ul),
+  .markdown-body :global(ol) { margin: var(--space-1) 0; padding-left: var(--space-5); }
+  .markdown-body :global(li) { margin: var(--space-1) 0; }
+  .markdown-body :global(code) {
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 1px 4px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+  .markdown-body :global(pre) {
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: var(--space-3);
+    overflow: auto;
+  }
+  .markdown-body :global(pre code) {
+    background: transparent;
+    border: 0;
+    padding: 0;
+  }
+  .markdown-body :global(strong) { font-weight: 600; }
+  .markdown-body :global(h1),
+  .markdown-body :global(h2),
+  .markdown-body :global(h3) { font-size: 15px; margin: var(--space-3) 0 var(--space-2); }
   .summary-label {
     font-size: 11px;
     text-transform: uppercase;
