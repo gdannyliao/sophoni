@@ -96,6 +96,42 @@ fn system_prompt(
 9. 完成任务后给出简短总结。{file_ops_hint}")
 }
 
+/// 去掉模型输出中的 <think>...</think> 思维链标签（MiniMax-M3 等模型会输出）。
+pub fn strip_think_tags(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut in_think = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("<think>") {
+            in_think = true;
+            let after = trimmed.strip_prefix("<think>").unwrap_or("");
+            if after.contains("</think>") {
+                let clean = after.split("</think>").nth(1).unwrap_or("");
+                if !clean.trim().is_empty() {
+                    result.push_str(clean.trim());
+                    result.push('\n');
+                }
+                in_think = false;
+            }
+            continue;
+        }
+        if in_think {
+            if trimmed.contains("</think>") {
+                in_think = false;
+                let after = trimmed.split("</think>").nth(1).unwrap_or("");
+                if !after.trim().is_empty() {
+                    result.push_str(after.trim());
+                    result.push('\n');
+                }
+            }
+            continue;
+        }
+        result.push_str(line);
+        result.push('\n');
+    }
+    result.trim_end_matches('\n').to_string()
+}
+
 pub fn parse_category(text: &str) -> (Option<String>, String) {
     let first_line = text.lines().next().unwrap_or("");
     if let Some(rest) = first_line.trim().strip_prefix("[category:") {
@@ -212,7 +248,8 @@ pub async fn run_agent_task(
 
         let calls = match response {
             Ok(Ok(ProviderResponse::FinalAnswer(text))) => {
-                push(&mut events, sink, summary_event(&text));
+                let clean = strip_think_tags(&text);
+                push(&mut events, sink, summary_event(&clean));
                 break;
             }
             Ok(Ok(ProviderResponse::ToolCalls(calls))) => calls,
@@ -609,7 +646,39 @@ mod tests {
         vec![]
     }
 
+    
     #[test]
+    fn strip_think_tags_removes_think_block() {
+        let input = "<think>用户在问文件列表</think>\n工作区只有一个文件 abc.txt";
+        let result = super::strip_think_tags(input);
+        assert!(!result.contains("<think>"));
+        assert!(!result.contains("用户在问文件列表"));
+        assert!(result.contains("工作区只有一个文件 abc.txt"));
+    }
+
+    #[test]
+    fn strip_think_tags_preserves_text_without_think() {
+        let input = "工作区只有一个文件 abc.txt";
+        let result = super::strip_think_tags(input);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn strip_think_tags_handles_inline_think() {
+        let input = "<think>思考</think>实际回答";
+        let result = super::strip_think_tags(input);
+        assert_eq!(result, "实际回答");
+    }
+
+    #[test]
+    fn parse_category_with_think_tags() {
+        let input = "[category: 编译修复]\n修复了 lib.rs";
+        let (cat, summary) = super::parse_category(input);
+        assert_eq!(cat.as_deref(), Some("编译修复"));
+        assert_eq!(summary, "修复了 lib.rs");
+    }
+
+#[test]
     fn mock_agent_returns_events_and_file_change() {
         let root =
             std::env::temp_dir().join(format!("sophoni-agent-test-{}", uuid::Uuid::new_v4()));

@@ -201,8 +201,9 @@ async fn run_agent_task(
         let events_json = serde_json::to_string(&result.events).unwrap_or_else(|_| "[]".to_string());
         let _ = storage.update_conversation_events(&conversation.id, &events_json);
 
-        // 解析 category：summary 第一行 [category: xxx]
-        let (category, clean_summary) = core::agent::parse_category(&result.summary);
+        // 先去掉 <think> 标签，再解析 category
+        let clean_text = core::agent::strip_think_tags(&result.summary);
+        let (category, clean_summary) = core::agent::parse_category(&clean_text);
         let title = if clean_summary.is_empty() {
             conversation.id.to_string()
         } else {
