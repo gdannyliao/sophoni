@@ -5,7 +5,9 @@
   import ReviewView from "./lib/components/ReviewView.svelte";
   import SettingsPanel from "./lib/components/SettingsPanel.svelte";
   import ConfirmDialog from "./lib/components/ConfirmDialog.svelte";
-  import { runAgentTask, cancelAgentTask, onAgentEvent, onCommandConfirm, resolveCommandConfirm, getWorkspacePath, listConversations, getConversation } from "./lib/api";
+  import WelcomeView from "./lib/components/WelcomeView.svelte";
+  import { open } from "@tauri-apps/plugin-dialog";
+  import { runAgentTask, cancelAgentTask, onAgentEvent, onCommandConfirm, resolveCommandConfirm, getWorkspacePath, setWorkspacePath, listConversations, getConversation } from "./lib/api";
   import type { UnlistenFn } from "@tauri-apps/api/event";
   import type { AgentEvent, CommandConfirmRequest, ConversationSummary, FileChange } from "./lib/types";
 
@@ -35,11 +37,16 @@
     }
   });
 
-  async function runDemo(task: string) {
-    if (!workspacePath) {
-      events = [...events, { kind: "error", title: "未选择工作区", body: "请先点击左侧打开工作区", toolCallId: undefined }];
-      return;
+  async function selectWorkspace() {
+    const selected = await open({ directory: true, multiple: false });
+    if (typeof selected === "string") {
+      await setWorkspacePath(selected);
+      workspacePath = selected;
+      conversations = await listConversations();
     }
+  }
+
+  async function runDemo(task: string) {
     running = true;
     events = [];
     fileChanges = [];
@@ -53,7 +60,7 @@
         events = [...events, e];
       });
       confirmUnlisten = await onCommandConfirm((req) => { pendingConfirm = req; });
-      const result = await runAgentTask(task || "读 README.md 并加一行注释");
+      const result = await runAgentTask(task);
       fileChanges = result.fileChanges;
       summary = result.summary;
       if (activeConversationId) {
@@ -85,10 +92,6 @@
     }
   }
 
-  function handleWorkspaceChange(path: string) {
-    workspacePath = path;
-  }
-
   async function selectConversation(id: string) {
     try {
       const conv = await getConversation(id);
@@ -111,22 +114,32 @@
       onToggleCollapse={() => (sidebarCollapsed = !sidebarCollapsed)}
       onOpenSettings={() => (showSettings = true)}
       {workspacePath}
-      onWorkspaceChange={handleWorkspaceChange}
+      onSelectWorkspace={selectWorkspace}
       {conversations}
       {activeConversationId}
       onSelectConversation={selectConversation}
     />
-    <Conversation
-      {events}
-      {summary}
-      bind:prompt
-      {running}
-      workspacePath={workspacePath ?? "未选择工作区"}
-      changeCount={fileChanges.length}
-      onRun={runDemo}
-      onCancel={cancel}
-      onReview={() => (view = "review")}
-    />
+    {#if activeConversationId === null}
+      <WelcomeView
+        {workspacePath}
+        {conversations}
+        onStart={runDemo}
+        onSelectConversation={selectConversation}
+        onSelectWorkspace={selectWorkspace}
+      />
+    {:else}
+      <Conversation
+        {events}
+        {summary}
+        bind:prompt
+        {running}
+        workspacePath={workspacePath ?? "未选择工作区"}
+        changeCount={fileChanges.length}
+        onRun={runDemo}
+        onCancel={cancel}
+        onReview={() => (view = "review")}
+      />
+    {/if}
   </div>
 {/if}
 

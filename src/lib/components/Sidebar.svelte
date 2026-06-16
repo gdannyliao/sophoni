@@ -1,6 +1,5 @@
 <script lang="ts">
-  import { open } from "@tauri-apps/plugin-dialog";
-  import { getConfigStatus, setWorkspacePath } from "../api";
+  import { getConfigStatus } from "../api";
   import type { ConfigStatus, ConversationSummary } from "../types";
   import { onMount } from "svelte";
 
@@ -8,7 +7,7 @@
   export let onToggleCollapse: () => void = () => {};
   export let onOpenSettings: () => void = () => {};
   export let workspacePath: string | null = null;
-  export let onWorkspaceChange: (path: string) => void = () => {};
+  export let onSelectWorkspace: () => void = () => {};
   export let conversations: ConversationSummary[] = [];
   export let activeConversationId: string | null = null;
   export let onSelectConversation: (id: string) => void = () => {};
@@ -22,14 +21,6 @@
       status = { configured: false, provider: "(未配置)", model: "(未知)" };
     }
   });
-
-  async function selectWorkspace() {
-    const selected = await open({ directory: true, multiple: false });
-    if (typeof selected === "string") {
-      await setWorkspacePath(selected);
-      onWorkspaceChange(selected);
-    }
-  }
 </script>
 
 <aside class="sidebar" class:collapsed aria-label="工作区与会话" data-testid="sidebar">
@@ -57,7 +48,7 @@
         <div class="workspace-path" title={workspacePath}>📁 {workspacePath}</div>
       {:else}
         <div class="workspace-empty">未选择工作区</div>
-        <button class="btn workspace-btn" data-testid="workspace-open" on:click={selectWorkspace}>📁 打开工作区</button>
+        <button class="btn workspace-btn" data-testid="workspace-open" on:click={onSelectWorkspace}>📁 打开工作区</button>
       {/if}
     </div>
     <div class="sidebar-footer">
