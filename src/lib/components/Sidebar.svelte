@@ -1,7 +1,7 @@
 <script lang="ts">
   import { open } from "@tauri-apps/plugin-dialog";
   import { getConfigStatus, setWorkspacePath } from "../api";
-  import type { ConfigStatus } from "../types";
+  import type { ConfigStatus, ConversationSummary } from "../types";
   import { onMount } from "svelte";
 
   export let collapsed = false;
@@ -9,6 +9,9 @@
   export let onOpenSettings: () => void = () => {};
   export let workspacePath: string | null = null;
   export let onWorkspaceChange: (path: string) => void = () => {};
+  export let conversations: ConversationSummary[] = [];
+  export let activeConversationId: string | null = null;
+  export let onSelectConversation: (id: string) => void = () => {};
 
   let status: ConfigStatus | null = null;
 
@@ -34,9 +37,20 @@
     <div class="sidebar-content">
       <div class="brand">◈ Sophoni</div>
       <div class="section-label">会话</div>
-      <div class="session-item active">修复编译错误</div>
-      <div class="session-item">跑 git status</div>
-      <div class="session-item">更新 README</div>
+      {#each conversations as conv (conv.id)}
+        <div
+          class="session-item"
+          class:active={conv.id === activeConversationId}
+          role="button"
+          tabindex="0"
+          on:click={() => onSelectConversation(conv.id)}
+          on:keydown={(e) => e.key === "Enter" && onSelectConversation(conv.id)}
+        >
+          {conv.title}
+        </div>
+      {:else}
+        <div class="session-empty">暂无会话</div>
+      {/each}
     </div>
     <div class="workspace-section">
       {#if workspacePath}
@@ -90,6 +104,11 @@
     background: rgba(31, 111, 235, 0.15);
     border-left: 2px solid var(--accent);
     color: var(--text-primary);
+  }
+  .session-empty {
+    padding: var(--space-2) var(--space-3);
+    color: var(--text-secondary);
+    font-size: 12px;
   }
   .workspace-section {
     padding: var(--space-3);

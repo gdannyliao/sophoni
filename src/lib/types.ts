@@ -35,3 +35,13 @@ export interface ConfigStatus {
   provider: string;
   model: string;
 }
+
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  updatedAt: string;
+}
+
+export interface Conversation extends ConversationSummary {
+  eventsJson: string;
+}

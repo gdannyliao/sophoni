@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AgentEvent, AgentTaskResult, CommandConfirmRequest, CommandRisk, ConfigStatus, RiskLevel } from "./types";
+import type { AgentEvent, AgentTaskResult, CommandConfirmRequest, CommandRisk, ConfigStatus, Conversation, ConversationSummary, RiskLevel } from "./types";
 
 export async function getAppStatus(): Promise<string> {
   return invoke<string>("get_app_status");
@@ -52,4 +52,12 @@ export async function getWorkspacePath(): Promise<string | null> {
 
 export async function setWorkspacePath(path: string): Promise<void> {
   await invoke("set_workspace_path", { path });
+}
+
+export async function listConversations(): Promise<ConversationSummary[]> {
+  return invoke<ConversationSummary[]>("list_conversations");
+}
+
+export async function getConversation(id: string): Promise<Conversation> {
+  return invoke<Conversation>("get_conversation", { id });
 }
