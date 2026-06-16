@@ -25,6 +25,7 @@
     | { type: "thought"; title: string }
     | { type: "command"; id: string; command: string; exitCode: number | null; stdout: string; stderr: string }
     | { type: "change"; path: string; kind: "created" | "modified" | "deleted" }
+    | { type: "round_timing"; title: string; body: string }
     | { type: "error"; body: string };
 
   $: items = processEvents(events);
@@ -68,7 +69,11 @@
       }
       // thought
       else if (ev.kind === "thought") {
-        items.push({ type: "thought", title: ev.title });
+        items.push({ type: "thought", title: ev.body });
+      }
+      // round_timing：轮次耗时徽章
+      else if (ev.kind === "round_timing") {
+        items.push({ type: "round_timing", title: ev.title, body: ev.body });
       }
       // error
       else if (ev.kind === "error") {
@@ -108,6 +113,8 @@
           <MessageBubble content={item.content} />
         {:else if item.type === "thought"}
           <ThoughtLine title={item.title} />
+        {:else if item.type === "round_timing"}
+          <div class="round-timing" data-testid="round-timing">⏱ {item.title} · {item.body}</div>
         {:else if item.type === "command"}
           <CommandCard command={item.command} exitCode={item.exitCode} stdout={item.stdout} stderr={item.stderr} />
         {:else if item.type === "change"}
@@ -182,6 +189,13 @@
     padding: var(--space-3) var(--space-4);
     color: var(--danger);
     font-size: 13px;
+  }
+  .round-timing {
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    padding: 2px var(--space-2);
+    align-self: flex-start;
   }
   .summary-card {
     background: var(--bg-secondary);

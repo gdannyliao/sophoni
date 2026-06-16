@@ -123,7 +123,7 @@ pub async fn run_agent_task(
         },
     );
 
-    for _round in 0..MAX_ROUNDS {
+    for round in 0..MAX_ROUNDS {
         if cancel.load(Ordering::Relaxed) {
             push(&mut events, sink, error_event("用户取消了任务"));
             break;
@@ -133,32 +133,61 @@ pub async fn run_agent_task(
             break;
         }
 
-        // 流式回调：把模型生成的文本 token 实时 emit 给前端。统一用 title="assistant"
-        // 表示「模型正在生成的文本」。前端把同一段 token 流累积成一个输出气泡；
-        // 轮次结束后，后端再发对应的轮次级事件（summary / tool_call）做定型。
+        // 流式回调：token 实时 emit 给前端，同时累积到 round_text 供本轮结束时判断
+        // 是否是「推理过程」（ToolCalls 轮里模型的 reasoning 文本）。用 Arc<Mutex<String>>
+        // 让闭包满足 Send+Sync（TokenSink 要求），锁开销可忽略（后端已 30ms 批量）。
+        let round_text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let round_text_for_cb = round_text.clone();
         let sink_ref: &dyn EventSink = sink;
-        let on_token = |delta: &str| {
+        let on_token = move |delta: &str| {
             sink_ref.emit(&AgentEvent {
                 kind: "token".into(),
                 title: "assistant".into(),
                 body: delta.to_string(),
                 tool_call_id: None,
             });
+            if let Ok(mut acc) = round_text_for_cb.lock() {
+                acc.push_str(delta);
+            }
         };
 
+        let round_start = Instant::now();
         let response = tokio::time::timeout(
             PER_ROUND_TIMEOUT,
             provider.complete_streaming(&system, &turns, &schemas, &on_token),
         )
         .await;
+        let round_elapsed_ms = round_start.elapsed().as_millis();
+        let round_text_val = round_text.lock().map(|s| s.clone()).unwrap_or_default();
+        // 后端日志：每轮耗时，便于定位延迟瓶颈。
+        eprintln!("[agent] round {}: {}ms", round + 1, round_elapsed_ms);
 
         let calls = match response {
             Ok(Ok(ProviderResponse::FinalAnswer(text))) => {
+                emit_round_timing(&mut events, sink, round + 1, round_elapsed_ms, "最终答案");
                 push(&mut events, sink, summary_event(&text));
                 break;
             }
-            Ok(Ok(ProviderResponse::ToolCalls(calls))) => calls,
+            Ok(Ok(ProviderResponse::ToolCalls(calls))) => {
+                let call_count = calls.len();
+                // 工具调用轮：若有累积的推理文本，落定为 thought 事件（前端淡色展示）。
+                if !round_text_val.is_empty() {
+                    push(
+                        &mut events,
+                        sink,
+                        AgentEvent {
+                            kind: "thought".into(),
+                            title: "推理".into(),
+                            body: round_text_val,
+                            tool_call_id: None,
+                        },
+                    );
+                }
+                emit_round_timing(&mut events, sink, round + 1, round_elapsed_ms, &format!("工具调用×{call_count}"));
+                calls
+            }
             Ok(Err(e)) => {
+                emit_round_timing(&mut events, sink, round + 1, round_elapsed_ms, "Provider 错误");
                 push(
                     &mut events,
                     sink,
@@ -167,6 +196,7 @@ pub async fn run_agent_task(
                 break;
             }
             Err(_elapsed) => {
+                emit_round_timing(&mut events, sink, round + 1, PER_ROUND_TIMEOUT.as_millis(), "单轮超时");
                 push(&mut events, sink, error_event("单轮超时(30s)"));
                 break;
             }
@@ -218,6 +248,27 @@ pub async fn run_agent_task(
 fn push(events: &mut Vec<AgentEvent>, sink: &dyn EventSink, event: AgentEvent) {
     sink.emit(&event);
     events.push(event);
+}
+
+/// emit 一条轮次耗时事件（kind="round_timing"），前端渲染成徽章。同时本函数不写
+/// 后端日志——日志在循环内用 eprintln! 输出，避免重复。
+fn emit_round_timing(
+    events: &mut Vec<AgentEvent>,
+    sink: &dyn EventSink,
+    round: usize,
+    elapsed_ms: u128,
+    result_label: &str,
+) {
+    push(
+        events,
+        sink,
+        AgentEvent {
+            kind: "round_timing".into(),
+            title: format!("轮次{round}"),
+            body: format!("{elapsed_ms}ms · {result_label}"),
+            tool_call_id: None,
+        },
+    );
 }
 
 fn tool_schemas(level: super::command_risk::RiskLevel, mode: super::tools::WorkspaceMode) -> Vec<AgentToolSchema> {

@@ -81,6 +81,11 @@
           pendingBuffer += e.body;
           scheduleFlush();
         } else {
+          if (e.kind === "thought" || e.kind === "summary") {
+            streamingText = "";
+            pendingBuffer = "";
+            rafScheduled = false;
+          }
           if (e.kind === "conversation_created") {
             activeConversationId = e.body;
             conversations = [{ id: e.body, title: e.body, updatedAt: new Date().toISOString() }, ...conversations];
