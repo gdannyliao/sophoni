@@ -1,11 +1,12 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { getConfigStatus } from "../api";
-  import type { ConfigStatus } from "../types";
+  import { getConfigStatus, getRiskLevel, setRiskLevel } from "../api";
+  import type { ConfigStatus, RiskLevel } from "../types";
 
   export let onClose: () => void = () => {};
 
   let status: ConfigStatus | null = null;
+  let riskLevel: RiskLevel = "standard";
 
   onMount(async () => {
     try {
@@ -13,7 +14,18 @@
     } catch {
       status = { configured: false, provider: "(查询失败)", model: "(查询失败)" };
     }
+    try {
+      riskLevel = await getRiskLevel();
+    } catch {
+      // 默认 standard
+    }
   });
+
+  async function onRiskLevelChange(e: Event) {
+    const target = e.target as HTMLInputElement;
+    riskLevel = target.value as RiskLevel;
+    await setRiskLevel(riskLevel);
+  }
 </script>
 
 <div class="settings-panel" role="dialog" aria-modal="true" aria-label="设置" data-testid="settings-panel">
@@ -41,6 +53,24 @@
         <p class="hint">请在 <code>~/.config/sophoni/config.toml</code> 配置 Provider，参考 README。</p>
       {/if}
     {/if}
+
+    <div class="settings-row" style="margin-top: {status ? '16px' : '0'};">
+      <span class="label">风险等级</span>
+    </div>
+    <div class="risk-options">
+      <label class="risk-option">
+        <input type="radio" name="riskLevel" value="standard" checked={riskLevel === "standard"} on:change={onRiskLevelChange} />
+        <span>标准</span>
+      </label>
+      <label class="risk-option">
+        <input type="radio" name="riskLevel" value="relaxed" checked={riskLevel === "relaxed"} on:change={onRiskLevelChange} />
+        <span>宽松</span>
+      </label>
+      <label class="risk-option">
+        <input type="radio" name="riskLevel" value="unrestricted" checked={riskLevel === "unrestricted"} on:change={onRiskLevelChange} />
+        <span>完全访问</span>
+      </label>
+    </div>
   </div>
 </div>
 
@@ -73,4 +103,17 @@
   .hint { font-size: 12px; color: var(--text-secondary); margin-top: var(--space-3); }
   code { font-family: var(--font-mono); }
   .icon-only { padding: var(--space-1) var(--space-2); }
+  .risk-options {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: var(--space-2) 0;
+  }
+  .risk-option {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: 13px;
+    cursor: pointer;
+  }
 </style>

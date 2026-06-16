@@ -3,9 +3,10 @@
   import Conversation from "./lib/components/Conversation.svelte";
   import ReviewView from "./lib/components/ReviewView.svelte";
   import SettingsPanel from "./lib/components/SettingsPanel.svelte";
-  import { runAgentTask, cancelAgentTask, onAgentEvent } from "./lib/api";
+  import ConfirmDialog from "./lib/components/ConfirmDialog.svelte";
+  import { runAgentTask, cancelAgentTask, onAgentEvent, onCommandConfirm, resolveCommandConfirm } from "./lib/api";
   import type { UnlistenFn } from "@tauri-apps/api/event";
-  import type { AgentEvent, FileChange } from "./lib/types";
+  import type { AgentEvent, CommandConfirmRequest, FileChange } from "./lib/types";
 
   let events: AgentEvent[] = [];
   let fileChanges: FileChange[] = [];
@@ -13,9 +14,11 @@
   let prompt = "";
   let running = false;
   let unlisten: UnlistenFn | null = null;
+  let confirmUnlisten: UnlistenFn | null = null;
   let view: "main" | "review" = "main";
   let showSettings = false;
   let sidebarCollapsed = false;
+  let pendingConfirm: CommandConfirmRequest | null = null;
 
   const WORKSPACE_ROOT = "/tmp/sophoni";
 
@@ -26,8 +29,8 @@
     summary = "";
     try {
       unlisten = await onAgentEvent((e) => { events = [...events, e]; });
+      confirmUnlisten = await onCommandConfirm((req) => { pendingConfirm = req; });
       const result = await runAgentTask(WORKSPACE_ROOT, task || "读 README.md 并加一行注释");
-      // 修复：只用 result 的 fileChanges 和 summary，events 由实时推送维护
       fileChanges = result.fileChanges;
       summary = result.summary;
     } catch (e) {
@@ -35,12 +38,21 @@
     } finally {
       unlisten?.();
       unlisten = null;
+      confirmUnlisten?.();
+      confirmUnlisten = null;
       running = false;
     }
   }
 
   async function cancel() {
     await cancelAgentTask();
+  }
+
+  async function resolveConfirm(allowed: boolean) {
+    if (pendingConfirm) {
+      await resolveCommandConfirm(pendingConfirm.requestId, allowed);
+      pendingConfirm = null;
+    }
   }
 </script>
 
@@ -79,6 +91,10 @@
       <SettingsPanel onClose={() => (showSettings = false)} />
     </div>
   </button>
+{/if}
+
+{#if pendingConfirm}
+  <ConfirmDialog request={pendingConfirm} onResolve={resolveConfirm} />
 {/if}
 
 <style>
