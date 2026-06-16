@@ -1,10 +1,27 @@
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CommandRisk {
     Low,
     High,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RiskLevel {
+    #[default]
+    Standard,
+    Relaxed,
+    Unrestricted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommandAction {
+    Allow,
+    Deny(String),
+    RequireConfirm,
 }
 
 pub fn classify_command(command: &str, _workspace_root: &str) -> CommandRisk {
@@ -87,6 +104,182 @@ pub fn classify_command(command: &str, _workspace_root: &str) -> CommandRisk {
     CommandRisk::High
 }
 
+// ── 三档风险等级判定 ──
+
+pub fn classify_command_with_level(
+    command: &str,
+    workspace_root: &str,
+    level: RiskLevel,
+) -> CommandAction {
+    match level {
+        RiskLevel::Standard => classify_standard(command, workspace_root),
+        RiskLevel::Relaxed => classify_relaxed(command, workspace_root),
+        RiskLevel::Unrestricted => classify_unrestricted(command, workspace_root),
+    }
+}
+
+fn classify_standard(command: &str, workspace_root: &str) -> CommandAction {
+    match classify_command(command, workspace_root) {
+        CommandRisk::Low => CommandAction::Allow,
+        CommandRisk::High => CommandAction::Deny("高风险命令".into()),
+    }
+}
+
+fn classify_relaxed(command: &str, workspace_root: &str) -> CommandAction {
+    let normalized = command.trim().to_lowercase();
+
+    if normalized.is_empty() {
+        return CommandAction::Deny("空命令".into());
+    }
+
+    if has_shell_structure_risk(&normalized)
+        || has_rg_execution_risk(&normalized)
+        || has_rg_shell_expansion_risk(&normalized)
+    {
+        return CommandAction::Deny("shell 注入风险".into());
+    }
+
+    if is_fatal_pattern(&normalized) {
+        return CommandAction::Deny("致命命令".into());
+    }
+
+    if normalized.starts_with("rg ") || normalized == "rg" {
+        return CommandAction::Allow;
+    }
+
+    let relaxed_whitelist = [
+        "ls",
+        "rg",
+        "git status",
+        "git diff",
+        "git log",
+        "git add",
+        "git commit",
+        "git push",
+        "git pull",
+        "git fetch",
+        "git checkout",
+        "git switch",
+        "git branch",
+        "git merge",
+        "git rebase",
+        "cargo test",
+        "cargo check",
+        "cargo build",
+        "cargo clippy",
+        "cargo run",
+        "cargo fmt",
+        "cargo doc",
+        "cargo add",
+        "cargo update",
+        "npm test",
+        "npm run build",
+        "npm run dev",
+        "npm run lint",
+        "npm install",
+        "npm ci",
+        "pnpm test",
+        "pnpm build",
+        "pnpm check",
+        "pnpm dev",
+        "pnpm lint",
+        "pnpm install",
+        "yarn test",
+        "yarn build",
+        "yarn install",
+        "tsc",
+        "eslint",
+        "prettier",
+    ];
+    if relaxed_whitelist
+        .iter()
+        .any(|prefix| normalized == *prefix || normalized.starts_with(&format!("{prefix} ")))
+    {
+        return CommandAction::Allow;
+    }
+
+    if normalized.starts_with("sudo ") || normalized == "sudo" {
+        return CommandAction::RequireConfirm;
+    }
+
+    CommandAction::RequireConfirm
+}
+
+fn classify_unrestricted(command: &str, workspace_root: &str) -> CommandAction {
+    let normalized = command.trim().to_lowercase();
+
+    if normalized.is_empty() {
+        return CommandAction::Deny("空命令".into());
+    }
+
+    if has_shell_structure_risk(&normalized)
+        || has_rg_execution_risk(&normalized)
+        || has_rg_shell_expansion_risk(&normalized)
+    {
+        return CommandAction::Deny("shell 注入风险".into());
+    }
+
+    if is_fatal_pattern(&normalized) {
+        return CommandAction::Deny("致命命令".into());
+    }
+
+    if normalized.starts_with("sudo ") || normalized == "sudo" {
+        return CommandAction::RequireConfirm;
+    }
+
+    let first_word = normalized.split_whitespace().next().unwrap_or("");
+    if matches!(first_word, "rm" | "mv" | "cp") {
+        if paths_within_workspace(&normalized, workspace_root) {
+            return CommandAction::Allow;
+        }
+        return CommandAction::RequireConfirm;
+    }
+
+    CommandAction::Allow
+}
+
+fn is_fatal_pattern(normalized: &str) -> bool {
+    let fatal_markers = [
+        "rm -rf /",
+        "rm -rf /*",
+        "dd if=",
+        "mkfs",
+        ":(){",
+        "> /dev/sd",
+    ];
+    fatal_markers.iter().any(|m| normalized.contains(m))
+}
+
+fn is_within_workspace(path: &str, workspace_root: &str) -> bool {
+    let root = Path::new(workspace_root);
+    let target = if Path::new(path).is_absolute() {
+        Path::new(path).to_path_buf()
+    } else {
+        root.join(path)
+    };
+    let normalized = super::workspace::lexical_normalize(&target);
+    normalized.starts_with(root)
+}
+
+fn extract_path_args(normalized: &str) -> Vec<String> {
+    shell_words(normalized)
+        .into_iter()
+        .skip(1)
+        .filter(|arg| !arg.starts_with('-'))
+        .collect()
+}
+
+fn paths_within_workspace(normalized: &str, workspace_root: &str) -> bool {
+    if normalized.contains('$') || normalized.contains('~') {
+        return false;
+    }
+    let paths = extract_path_args(normalized);
+    if paths.is_empty() {
+        return false;
+    }
+    paths.iter().all(|p| is_within_workspace(p, workspace_root))
+}
+
 fn has_shell_structure_risk(normalized: &str) -> bool {
     let shell_structure_markers = [";", "&&", "||", "|", ">", "<", "&", "\n", "`", "$("];
 
@@ -142,7 +335,7 @@ pub(crate) fn shell_words(command: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_command, CommandRisk};
+    use super::{classify_command, classify_command_with_level, CommandAction, CommandRisk, RiskLevel};
 
     #[test]
     fn git_diff_is_low_risk() {
@@ -289,8 +482,7 @@ mod tests {
             CommandRisk::High
         );
         assert_eq!(
-            classify_command("rg 
---pre' sh needle src/file.txt", "/tmp/project"),
+            classify_command("rg $'--pre' sh needle src/file.txt", "/tmp/project"),
             CommandRisk::High
         );
     }
@@ -368,5 +560,115 @@ mod tests {
     #[test]
     fn risk_echo_is_high() {
         assert_eq!(classify_command("echo hello", ""), CommandRisk::High);
+    }
+
+    // ── 三档等级测试 ──
+
+    #[test]
+    fn standard_allows_whitelist() {
+        assert_eq!(
+            classify_command_with_level("cargo test", "", RiskLevel::Standard),
+            CommandAction::Allow
+        );
+    }
+
+    #[test]
+    fn standard_denies_install() {
+        assert_eq!(
+            classify_command_with_level("npm install", "", RiskLevel::Standard),
+            CommandAction::Deny("高风险命令".into())
+        );
+    }
+
+    #[test]
+    fn relaxed_allows_install_commands() {
+        assert_eq!(
+            classify_command_with_level("npm install", "", RiskLevel::Relaxed),
+            CommandAction::Allow
+        );
+        assert_eq!(
+            classify_command_with_level("pnpm install", "", RiskLevel::Relaxed),
+            CommandAction::Allow
+        );
+    }
+
+    #[test]
+    fn relaxed_requires_confirm_for_rm() {
+        assert_eq!(
+            classify_command_with_level("rm src/file", "", RiskLevel::Relaxed),
+            CommandAction::RequireConfirm
+        );
+    }
+
+    #[test]
+    fn relaxed_denies_fatal_pattern() {
+        assert_eq!(
+            classify_command_with_level("rm -rf /", "", RiskLevel::Relaxed),
+            CommandAction::Deny("致命命令".into())
+        );
+    }
+
+    #[test]
+    fn relaxed_denies_shell_injection() {
+        assert_eq!(
+            classify_command_with_level("cargo test && rm -rf /", "", RiskLevel::Relaxed),
+            CommandAction::Deny("shell 注入风险".into())
+        );
+    }
+
+    #[test]
+    fn relaxed_requires_confirm_for_sudo() {
+        assert_eq!(
+            classify_command_with_level("sudo ls", "", RiskLevel::Relaxed),
+            CommandAction::RequireConfirm
+        );
+    }
+
+    #[test]
+    fn unrestricted_allows_rm_in_workspace() {
+        assert_eq!(
+            classify_command_with_level("rm src/file", "/tmp/project", RiskLevel::Unrestricted),
+            CommandAction::Allow
+        );
+    }
+
+    #[test]
+    fn unrestricted_requires_confirm_for_rm_outside() {
+        assert_eq!(
+            classify_command_with_level("rm /etc/passwd", "/tmp/project", RiskLevel::Unrestricted),
+            CommandAction::RequireConfirm
+        );
+    }
+
+    #[test]
+    fn unrestricted_denies_fatal_pattern() {
+        assert_eq!(
+            classify_command_with_level("rm -rf /", "/tmp/project", RiskLevel::Unrestricted),
+            CommandAction::Deny("致命命令".into())
+        );
+    }
+
+    #[test]
+    fn unrestricted_requires_confirm_for_env_var_path() {
+        assert_eq!(
+            classify_command_with_level("rm $HOME/secret", "/tmp/project", RiskLevel::Unrestricted),
+            CommandAction::RequireConfirm
+        );
+    }
+
+    #[test]
+    fn unrestricted_allows_cargo_test() {
+        assert_eq!(
+            classify_command_with_level("cargo test", "/tmp/project", RiskLevel::Unrestricted),
+            CommandAction::Allow
+        );
+    }
+
+    #[test]
+    fn unrestricted_denies_shell_injection() {
+        assert_eq!(
+            classify_command_with_level("ls; rm -rf /", "/tmp/project", RiskLevel::Unrestricted),
+            CommandAction::Deny("shell 注入风险".into())
+        );
     }
 }
