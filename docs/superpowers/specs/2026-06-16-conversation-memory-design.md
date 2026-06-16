@@ -92,12 +92,26 @@ pub struct ConversationMemory {
 
 ```
 1. 从 DB 读 workspace_id 下所有 conversation 的 (category, summary, updated_at)
-2. 按 category 分组（NULL 归入"其他"）
-3. 每组内按时间排序，拼接 summary（"- {summary}"）
-4. 取最近一个任务的 summary 单独列为"最近任务"
-5. 组装成记忆文本
-6. 作为 conversation 前缀传给模型
+2. 提取已有的 category 去重列表，写入 prompt 引导模型复用
+3. 按 category 分组（NULL 归入"其他"）
+4. 每组内按时间排序，拼接 summary（"- {summary}"）
+5. 取最近一个任务的 summary 单独列为"最近任务"
+6. 组装成记忆文本
+7. 作为 conversation 前缀传给模型
 ```
+
+### Category 一致性：prompt 引导复用
+
+新任务开始时，从 DB 读出已有的 category 列表（去重），写进 system prompt 的工作方式第 10 条：
+
+```
+10. 任务完成后的总结，第一行必须是分类标签，格式 [category: 标签名]。
+    已有类别：编译修复、依赖管理、文档更新。
+    优先复用已有类别，只在新任务类型不属于任何已有类别时才创建新类别。
+    标签用 2-4 个字概括任务类型。
+```
+
+"已有类别"列表从记忆构造逻辑第 2 步动态生成。首个任务（无历史）时该行为空，模型自由创建第一个类别。
 
 组装函数（agent.rs 或独立模块）：
 
@@ -188,11 +202,15 @@ fn parse_category(text: &str) -> (Option<String>, String) {
 
 ## SYSTEM_PROMPT 调整
 
-`system_prompt(level, mode)` 加一条工作方式（Full 模式下）：
+`system_prompt(level, mode, existing_categories)` 加一条工作方式（Full 模式下），动态插入已有类别：
 
 ```
-10. 任务完成后的总结，第一行必须是分类标签，格式 [category: 标签名]。标签用 2-4 个字概括任务类型（如"编译修复"、"依赖管理"、"文档更新"、"命令执行"、"测试验证"）。从第二行开始写总结。
+10. 任务完成后的总结，第一行必须是分类标签，格式 [category: 标签名]。
+    {已有类别提示，如："已有类别：编译修复、依赖管理。优先复用已有类别，只在新任务类型不属于任何已有类别时才创建新类别。"}
+    标签用 2-4 个字概括任务类型。从第二行开始写总结。
 ```
+
+`existing_categories` 从 DB 读取（当前工作区的历史 category 去重）。首个任务时该行为空，模型自由创建第一个类别。
 
 ChatOnly 模式不加（纯对话不需要分类）。
 
