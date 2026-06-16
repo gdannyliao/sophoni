@@ -121,23 +121,38 @@ async fn resolve_command_confirm(
 }
 
 #[tauri::command]
+fn get_workspace_path() -> Result<Option<String>, AppError> {
+    let (config, _) = AgentConfig::load()?;
+    Ok(config.workspace_path)
+}
+
+#[tauri::command]
+fn set_workspace_path(path: String) -> Result<(), AppError> {
+    core::config::save_workspace_path(&path)?;
+    Ok(())
+}
+
+#[tauri::command]
 async fn run_agent_task(
     state: State<'_, AppState>,
     app: AppHandle,
-    workspace_root: String,
     prompt: String,
 ) -> Result<AgentTaskResult, AppError> {
     state.cancel.store(false, Ordering::Relaxed);
 
     let (config, _provider) = AgentConfig::load()?;
     let risk_level = config.risk_level;
+    let workspace = config
+        .workspace_path
+        .clone()
+        .ok_or_else(|| AppError::Config("未选择工作区，请先打开工作区".into()))?;
     let provider = OpenAICompatibleProvider::new(config);
 
     let confirm_handler = Arc::new(TauriConfirmHandler {
         app: app.clone(),
         pending: state.confirm_pending.clone(),
     });
-    let tools = ToolDispatcher::new(PathBuf::from(&workspace_root))
+    let tools = ToolDispatcher::new(PathBuf::from(&workspace))
         .with_risk_level(risk_level)
         .with_confirm_handler(confirm_handler);
     let sink = AppEventSink { app };
@@ -163,6 +178,7 @@ fn cancel_agent_task(state: State<'_, AppState>) {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
             cancel: Arc::new(AtomicBool::new(false)),
             confirm_pending: Arc::new(Mutex::new(HashMap::new())),
@@ -174,6 +190,11 @@ pub fn run() {
             get_config_status,
             run_agent_task,
             cancel_agent_task,
+            get_risk_level,
+            set_risk_level,
+            resolve_command_confirm,
+            get_workspace_path,
+            set_workspace_path,
             get_risk_level,
             set_risk_level,
             resolve_command_confirm,
