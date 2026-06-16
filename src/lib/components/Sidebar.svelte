@@ -1,11 +1,14 @@
 <script lang="ts">
-  import { getConfigStatus } from "../api";
+  import { open } from "@tauri-apps/plugin-dialog";
+  import { getConfigStatus, setWorkspacePath } from "../api";
   import type { ConfigStatus } from "../types";
   import { onMount } from "svelte";
 
   export let collapsed = false;
   export let onToggleCollapse: () => void = () => {};
   export let onOpenSettings: () => void = () => {};
+  export let workspacePath: string | null = null;
+  export let onWorkspaceChange: (path: string) => void = () => {};
 
   let status: ConfigStatus | null = null;
 
@@ -16,6 +19,14 @@
       status = { configured: false, provider: "(未配置)", model: "(未知)" };
     }
   });
+
+  async function selectWorkspace() {
+    const selected = await open({ directory: true, multiple: false });
+    if (typeof selected === "string") {
+      await setWorkspacePath(selected);
+      onWorkspaceChange(selected);
+    }
+  }
 </script>
 
 <aside class="sidebar" class:collapsed aria-label="工作区与会话" data-testid="sidebar">
@@ -26,6 +37,15 @@
       <div class="session-item active">修复编译错误</div>
       <div class="session-item">跑 git status</div>
       <div class="session-item">更新 README</div>
+    </div>
+    <div class="workspace-section">
+      {#if workspacePath}
+        <div class="workspace-path" title={workspacePath}>📁 {workspacePath}</div>
+        <button class="btn workspace-btn" data-testid="workspace-switch" on:click={selectWorkspace}>切换</button>
+      {:else}
+        <div class="workspace-empty">未选择工作区</div>
+        <button class="btn workspace-btn" data-testid="workspace-open" on:click={selectWorkspace}>📁 打开工作区</button>
+      {/if}
     </div>
     <div class="sidebar-footer">
       <div class="model-info">{status?.model ?? "..."}</div>
@@ -72,6 +92,25 @@
     border-left: 2px solid var(--accent);
     color: var(--text-primary);
   }
+  .workspace-section {
+    padding: var(--space-3);
+    border-top: 1px solid var(--border);
+  }
+  .workspace-path {
+    font-size: 12px;
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin-bottom: var(--space-2);
+  }
+  .workspace-empty {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: var(--space-2);
+  }
+  .workspace-btn { width: 100%; }
   .sidebar-footer {
     padding: var(--space-3);
     border-top: 1px solid var(--border);

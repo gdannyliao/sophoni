@@ -14,8 +14,8 @@ export async function runMockTask(workspaceRoot: string, prompt: string): Promis
   return invoke<AgentTaskResult>("run_mock_task", { workspaceRoot, prompt });
 }
 
-export async function runAgentTask(workspaceRoot: string, prompt: string): Promise<AgentTaskResult> {
-  return invoke<AgentTaskResult>("run_agent_task", { workspaceRoot, prompt });
+export async function runAgentTask(prompt: string): Promise<AgentTaskResult> {
+  return invoke<AgentTaskResult>("run_agent_task", { prompt });
 }
 
 export async function cancelAgentTask(): Promise<void> {
@@ -44,4 +44,12 @@ export async function resolveCommandConfirm(requestId: string, allowed: boolean)
 
 export async function onCommandConfirm(cb: (req: CommandConfirmRequest) => void): Promise<UnlistenFn> {
   return listen<CommandConfirmRequest>("command-confirm", (ev) => cb(ev.payload));
+}
+
+export async function getWorkspacePath(): Promise<string | null> {
+  return invoke<string | null>("get_workspace_path");
+}
+
+export async function setWorkspacePath(path: string): Promise<void> {
+  await invoke("set_workspace_path", { path });
 }
