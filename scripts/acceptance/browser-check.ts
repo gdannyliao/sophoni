@@ -296,6 +296,15 @@ export async function runBrowserAcceptance({ logger }: BrowserAcceptanceOptions)
       checks.push(check("workspace section exists", false, "工作区区域未找到"));
     }
 
+    // 验证会话区域存在（Sidebar 渲染了会话列表或空提示）
+    try {
+      const sidebar = await page.getByTestId("sidebar").textContent().catch(() => null);
+      const hasSessionArea = sidebar !== null && (sidebar.includes("会话") || sidebar.includes("暂无"));
+      checks.push(check("conversation list area exists", hasSessionArea));
+    } catch {
+      checks.push(check("conversation list area exists", false, "会话区域未找到"));
+    }
+
     await page.screenshot({ path: screenshotPath, fullPage: true });
     checks.push(check("browser screenshot exists", existsSync(screenshotPath), SCREENSHOT_NAME));
   } catch (error) {
