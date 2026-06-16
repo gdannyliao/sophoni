@@ -39,7 +39,7 @@
           class:active={conv.id === activeConversationId}
         >
           <span class="session-title" role="button" tabindex="0" on:click={() => onSelectConversation(conv.id)} on:keydown={(e) => e.key === "Enter" && onSelectConversation(conv.id)}>
-            {conv.title}
+            {conv.title.length > 12 ? conv.title.slice(0, 12) + "…" : conv.title}
           </span>
           <button class="delete-btn" data-testid="delete-conversation" on:click={() => onDeleteConversation(conv.id)} title="删除">✕</button>
         </div>

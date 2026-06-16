@@ -11,6 +11,7 @@
   export let prompt = "";
   export let running = false;
   export let workspacePath = "";
+  export let title = "";
   export let changeCount = 0;
   export let onRun: (prompt: string) => void = () => {};
   export let onCancel: () => void = () => {};
@@ -89,7 +90,7 @@
   <header class="topbar">
     <div class="topbar-left">
       <div>
-        <div class="task-title">桌面 Agent 工作台</div>
+        <div class="task-title">{title}</div>
         <div class="workspace-path">{workspacePath}</div>
       </div>
     </div>

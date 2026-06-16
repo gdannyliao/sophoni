@@ -189,6 +189,7 @@
         {running}
         workspacePath={workspacePath ?? "未选择工作区"}
         changeCount={fileChanges.length}
+        title={conversations.find((c) => c.id === activeConversationId)?.title ?? ""}
         onRun={runDemo}
         onCancel={cancel}
         onReview={() => (view = "review")}
