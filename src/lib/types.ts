@@ -1,5 +1,13 @@
 export type CommandRisk = "low" | "high";
 
+export type RiskLevel = "standard" | "relaxed" | "unrestricted";
+
+export interface CommandConfirmRequest {
+  requestId: string;
+  command: string;
+  reason: string;
+}
+
 export interface AgentEvent {
   kind: string;
   title: string;

@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AgentEvent, AgentTaskResult, CommandRisk, ConfigStatus } from "./types";
+import type { AgentEvent, AgentTaskResult, CommandConfirmRequest, CommandRisk, ConfigStatus, RiskLevel } from "./types";
 
 export async function getAppStatus(): Promise<string> {
   return invoke<string>("get_app_status");
@@ -28,4 +28,20 @@ export async function getConfigStatus(): Promise<ConfigStatus> {
 
 export async function onAgentEvent(cb: (e: AgentEvent) => void): Promise<UnlistenFn> {
   return listen<AgentEvent>("agent-event", (ev) => cb(ev.payload));
+}
+
+export async function getRiskLevel(): Promise<RiskLevel> {
+  return invoke<RiskLevel>("get_risk_level");
+}
+
+export async function setRiskLevel(level: RiskLevel): Promise<void> {
+  await invoke("set_risk_level", { level });
+}
+
+export async function resolveCommandConfirm(requestId: string, allowed: boolean): Promise<void> {
+  await invoke("resolve_command_confirm", { requestId, allowed });
+}
+
+export async function onCommandConfirm(cb: (req: CommandConfirmRequest) => void): Promise<UnlistenFn> {
+  return listen<CommandConfirmRequest>("command-confirm", (ev) => cb(ev.payload));
 }
