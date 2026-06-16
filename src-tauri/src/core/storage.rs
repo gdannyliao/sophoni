@@ -11,6 +11,7 @@ pub struct Storage {
 
 impl Storage {
     pub fn open(path: impl AsRef<std::path::Path>) -> AppResult<Self> {
+        tracing::debug!(path = ?path.as_ref(), "storage: open");
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
         let storage = Self { conn };

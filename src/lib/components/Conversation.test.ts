@@ -37,4 +37,41 @@ describe("Conversation", () => {
     expect(screen.queryByTestId("streaming-bubble")).not.toBeInTheDocument();
     expect(screen.getByText("任务已完成")).toBeInTheDocument();
   });
+
+  it("round_timing 事件渲染成耗时徽章", () => {
+    const events = [
+      { kind: "round_timing", title: "轮次1", body: "3200ms · 工具调用×2", toolCallId: undefined },
+    ];
+    render(Conversation, { props: { events } });
+
+    const badge = screen.getByTestId("round-timing");
+    expect(badge).toBeInTheDocument();
+    expect(badge.textContent).toContain("轮次1");
+    expect(badge.textContent).toContain("3200ms");
+  });
+
+  it("thought 事件渲染推理文本（body 字段）", () => {
+    const events = [
+      { kind: "thought", title: "推理", body: "我需要先读取文件看看内容", toolCallId: undefined },
+    ];
+    render(Conversation, { props: { events } });
+
+    const thought = screen.getByTestId("thought-line");
+    expect(thought).toBeInTheDocument();
+    // thought 展示用 body（推理文本），不是固定的 title "推理"
+    expect(thought.textContent).toContain("我需要先读取文件看看内容");
+  });
+
+  it("多个 round_timing 按顺序渲染", () => {
+    const events = [
+      { kind: "round_timing", title: "轮次1", body: "1000ms · 工具调用×1", toolCallId: undefined },
+      { kind: "round_timing", title: "轮次2", body: "2000ms · 最终答案", toolCallId: undefined },
+    ];
+    render(Conversation, { props: { events } });
+
+    const badges = screen.getAllByTestId("round-timing");
+    expect(badges).toHaveLength(2);
+    expect(badges[0].textContent).toContain("轮次1");
+    expect(badges[1].textContent).toContain("轮次2");
+  });
 });

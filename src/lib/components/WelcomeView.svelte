@@ -60,9 +60,9 @@
           <div class="ws-hint">选择工作区以启用文件读写和命令执行</div>
         {/if}
       </div>
-      {#if !workspacePath}
-        <button class="btn ws-select-btn" data-testid="welcome-select-workspace" on:click={onSelectWorkspace}>选择</button>
-      {/if}
+      <button class="btn ws-select-btn" data-testid="welcome-select-workspace" on:click={onSelectWorkspace}>
+        {workspacePath ? "切换" : "选择"}
+      </button>
     </div>
 
     {#if workspacePath && conversations.length > 0}

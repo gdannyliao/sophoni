@@ -6,6 +6,7 @@ use super::domain::{
     ProviderResponse, SystemPrompt,
 };
 use super::errors::{AppError, AppResult};
+use tracing::{error, info, warn};
 
 const READ_RUNTIME_LOG_DEFAULT_MAX_LINES: usize = 80;
 const READ_RUNTIME_LOG_MAX_LINES: u64 = 200;
@@ -419,6 +420,12 @@ impl AgentProvider for OpenAICompatibleProvider {
             stream: Some(true),
         };
 
+        info!(
+            model = %self.config.model,
+            turns = turns.len(),
+            tools = tools.len(),
+            "provider: POST /chat/completions (stream)"
+        );
         let url = format!("{}/chat/completions", self.config.base_url);
         let resp = self
             .http
@@ -432,6 +439,7 @@ impl AgentProvider for OpenAICompatibleProvider {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
+            error!(%status, %body, "provider: HTTP error");
             return Err(AppError::Provider(format!("HTTP {status}: {body}")));
         }
 
@@ -460,13 +468,17 @@ impl AgentProvider for OpenAICompatibleProvider {
         }
 
         while let Some(chunk_res) = stream.next().await {
-            let bytes = chunk_res.map_err(|e| AppError::Provider(format!("stream error: {e}")))?;
+            let bytes = chunk_res.map_err(|e| {
+                warn!(error = %e, "provider: stream error");
+                AppError::Provider(format!("stream error: {e}"))
+            })?;
             let text = String::from_utf8_lossy(&bytes);
             for json_line in line_buf.feed(&text) {
                 if json_line == "[DONE]" {
                     continue;
                 }
                 let parsed: StreamChunk = serde_json::from_str(&json_line).map_err(|e| {
+                    warn!(error = %e, "provider: SSE parse error");
                     AppError::Provider(format!("failed to parse SSE chunk: {e} (line: {json_line})"))
                 })?;
                 let Some(choice) = parsed.choices.into_iter().next() else {

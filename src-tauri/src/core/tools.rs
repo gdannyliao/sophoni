@@ -13,6 +13,7 @@ use super::domain::{
     AgentToolArgs, AgentToolCall, AgentToolName, AgentToolResult, ChangeKind, FileChange,
 };
 use super::errors::{AppError, AppResult};
+use tracing::{info, warn};
 use super::workspace::{lexical_normalize, WorkspaceFs};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -88,7 +89,9 @@ impl ToolDispatcher {
     }
 
     pub async fn dispatch(&self, call: &AgentToolCall) -> AppResult<AgentToolResult> {
+        info!(tool = ?call.name, "dispatch");
         if self.workspace_mode == WorkspaceMode::ChatOnly {
+            warn!(tool = ?call.name, "dispatch blocked: ChatOnly mode");
             return Ok(AgentToolResult {
                 tool_call_id: call.id.clone(),
                 content: "未选择工作区，此操作不可用。请在左侧选择工作区。".to_string(),
@@ -541,6 +544,7 @@ impl ToolDispatcher {
                 let stdout = truncate_output(&String::from_utf8_lossy(&out.stdout), 100, 4000);
                 let stderr = truncate_output(&String::from_utf8_lossy(&out.stderr), 50, 2000);
                 let exit_code = out.status.code().unwrap_or(-1);
+                info!(%command, exit_code, "run_command");
                 let content = format!(
                     "exit code: {exit_code}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
                 );
