@@ -15,6 +15,13 @@ use super::domain::{
 use super::errors::{AppError, AppResult};
 use super::workspace::{lexical_normalize, WorkspaceFs};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WorkspaceMode {
+    #[default]
+    Full,
+    ChatOnly,
+}
+
 const LIST_FILES_MAX: usize = 200;
 const GREP_MAX: usize = 100;
 const ACCEPTANCE_RUNS_LIMIT_MIN: usize = 1;
@@ -44,6 +51,7 @@ pub struct ToolDispatcher {
     fs: WorkspaceFs,
     risk_level: RiskLevel,
     confirm_handler: Option<Arc<dyn ConfirmHandler>>,
+    workspace_mode: WorkspaceMode,
 }
 
 impl ToolDispatcher {
@@ -52,6 +60,7 @@ impl ToolDispatcher {
             fs: WorkspaceFs::new(root),
             risk_level: RiskLevel::Standard,
             confirm_handler: None,
+            workspace_mode: WorkspaceMode::default(),
         }
     }
 
@@ -65,11 +74,28 @@ impl ToolDispatcher {
         self
     }
 
+    pub fn with_workspace_mode(mut self, mode: WorkspaceMode) -> Self {
+        self.workspace_mode = mode;
+        self
+    }
+
     pub fn risk_level(&self) -> RiskLevel {
         self.risk_level
     }
 
+    pub fn workspace_mode(&self) -> WorkspaceMode {
+        self.workspace_mode
+    }
+
     pub async fn dispatch(&self, call: &AgentToolCall) -> AppResult<AgentToolResult> {
+        if self.workspace_mode == WorkspaceMode::ChatOnly {
+            return Ok(AgentToolResult {
+                tool_call_id: call.id.clone(),
+                content: "未选择工作区，此操作不可用。请在左侧选择工作区。".to_string(),
+                is_error: true,
+                file_change: None,
+            });
+        }
         match (&call.name, &call.arguments) {
             (AgentToolName::ReadFile, AgentToolArgs::Read { path }) => {
                 self.read_file(&call.id, path).await
@@ -1495,6 +1521,41 @@ mod tests {
         let out = truncate_output(input, 2, 4000);
         assert_eq!(out, "a\nb");
         assert!(!out.contains("截断"));
+    }
+
+    // ── WorkspaceMode 测试 ──
+
+    use super::WorkspaceMode;
+
+    #[tokio::test]
+    async fn chat_only_mode_blocks_file_tools() {
+        let root = std::env::temp_dir().join(format!("sophoni-chat-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("test.txt"), "hello").unwrap();
+
+        let tools = ToolDispatcher::new(root.clone())
+            .with_workspace_mode(WorkspaceMode::ChatOnly);
+
+        let result = tools.dispatch(&read_call("test.txt")).await.unwrap();
+
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(result.is_error, "ChatOnly 模式应阻止文件读取");
+        assert!(result.content.contains("未选择工作区"));
+    }
+
+    #[tokio::test]
+    async fn full_mode_allows_file_tools() {
+        let root = std::env::temp_dir().join(format!("sophoni-chat-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("test.txt"), "hello").unwrap();
+
+        let tools = ToolDispatcher::new(root.clone())
+            .with_workspace_mode(WorkspaceMode::Full);
+
+        let result = tools.dispatch(&read_call("test.txt")).await.unwrap();
+
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(!result.is_error, "Full 模式应允许文件读取");
     }
 
     // ── ConfirmHandler 测试 ──
