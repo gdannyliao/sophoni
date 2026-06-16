@@ -671,4 +671,116 @@ mod tests {
             CommandAction::Deny("shell 注入风险".into())
         );
     }
+
+    // ── 补充边界用例 ──
+
+    #[test]
+    fn relaxed_git_reset_requires_confirm() {
+        assert_eq!(
+            classify_command_with_level("git reset --hard", "/tmp/project", RiskLevel::Relaxed),
+            CommandAction::RequireConfirm
+        );
+    }
+
+    #[test]
+    fn relaxed_cargo_run_allowed() {
+        assert_eq!(
+            classify_command_with_level("cargo run", "/tmp/project", RiskLevel::Relaxed),
+            CommandAction::Allow
+        );
+    }
+
+    #[test]
+    fn relaxed_echo_requires_confirm() {
+        assert_eq!(
+            classify_command_with_level("echo hello", "/tmp/project", RiskLevel::Relaxed),
+            CommandAction::RequireConfirm
+        );
+    }
+
+    #[test]
+    fn unrestricted_mv_within_workspace_allowed() {
+        assert_eq!(
+            classify_command_with_level("mv src/a.txt src/b.txt", "/tmp/project", RiskLevel::Unrestricted),
+            CommandAction::Allow
+        );
+    }
+
+    #[test]
+    fn unrestricted_mv_outside_workspace_requires_confirm() {
+        assert_eq!(
+            classify_command_with_level("mv src/a.txt /tmp/elsewhere", "/tmp/project", RiskLevel::Unrestricted),
+            CommandAction::RequireConfirm
+        );
+    }
+
+    #[test]
+    fn unrestricted_cp_within_workspace_allowed() {
+        assert_eq!(
+            classify_command_with_level("cp src/a.txt src/b.txt", "/tmp/project", RiskLevel::Unrestricted),
+            CommandAction::Allow
+        );
+    }
+
+    #[test]
+    fn unrestricted_rm_with_tilde_requires_confirm() {
+        assert_eq!(
+            classify_command_with_level("rm ~/secret", "/tmp/project", RiskLevel::Unrestricted),
+            CommandAction::RequireConfirm
+        );
+    }
+
+    #[test]
+    fn unrestricted_rm_parent_dir_escape_requires_confirm() {
+        assert_eq!(
+            classify_command_with_level("rm ../outside", "/tmp/project", RiskLevel::Unrestricted),
+            CommandAction::RequireConfirm
+        );
+    }
+
+    #[test]
+    fn unrestricted_dd_denied() {
+        assert_eq!(
+            classify_command_with_level("dd if=/dev/zero of=/dev/sda", "/tmp/project", RiskLevel::Unrestricted),
+            CommandAction::Deny("致命命令".into())
+        );
+    }
+
+    #[test]
+    fn unrestricted_mkfs_denied() {
+        assert_eq!(
+            classify_command_with_level("mkfs.ext4 /dev/sda1", "/tmp/project", RiskLevel::Unrestricted),
+            CommandAction::Deny("致命命令".into())
+        );
+    }
+
+    #[test]
+    fn unrestricted_allows_arbitrary_command() {
+        // 非白名单也非高危的命令在完全访问模式下直接放行
+        assert_eq!(
+            classify_command_with_level("python3 script.py", "/tmp/project", RiskLevel::Unrestricted),
+            CommandAction::Allow
+        );
+    }
+
+    #[test]
+    fn relaxed_allows_git_operations() {
+        assert_eq!(
+            classify_command_with_level("git checkout feature", "/tmp/project", RiskLevel::Relaxed),
+            CommandAction::Allow
+        );
+        assert_eq!(
+            classify_command_with_level("git push origin main", "/tmp/project", RiskLevel::Relaxed),
+            CommandAction::Allow
+        );
+    }
+
+    #[test]
+    fn standard_denies_git_checkout() {
+        // Standard 模式 git checkout 不在白名单 → Deny
+        assert_eq!(
+            classify_command_with_level("git checkout feature", "/tmp/project", RiskLevel::Standard),
+            CommandAction::Deny("高风险命令".into())
+        );
+    }
 }

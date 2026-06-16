@@ -1496,4 +1496,129 @@ mod tests {
         assert_eq!(out, "a\nb");
         assert!(!out.contains("截断"));
     }
+
+    // ── ConfirmHandler 测试 ──
+
+    use super::{ConfirmHandler, RiskLevel};
+    use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+    use std::sync::Arc;
+
+    /// Mock ConfirmHandler：返回固定 bool，记录是否被调用。
+    struct MockConfirmHandler {
+        allowed: bool,
+        called: AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl ConfirmHandler for MockConfirmHandler {
+        async fn confirm(&self, _command: &str, _reason: &str) -> bool {
+            self.called.store(true, AtomicOrdering::Relaxed);
+            self.allowed
+        }
+    }
+
+    fn mock_handler(allowed: bool) -> Arc<MockConfirmHandler> {
+        Arc::new(MockConfirmHandler {
+            allowed,
+            called: AtomicBool::new(false),
+        })
+    }
+
+    #[tokio::test]
+    async fn run_command_relaxed_rm_confirmed_executes() {
+        let root = std::env::temp_dir().join(format!("sophoni-confirm-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("target.txt"), "x").unwrap();
+
+        let handler = mock_handler(true);
+        let tools = ToolDispatcher::new(root.clone())
+            .with_risk_level(RiskLevel::Relaxed)
+            .with_confirm_handler(handler.clone());
+
+        let result = tools.dispatch(&cmd_call("rm target.txt")).await.unwrap();
+
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(!result.is_error, "确认通过后命令应执行成功");
+    }
+
+    #[tokio::test]
+    async fn run_command_relaxed_rm_denied_returns_rejection() {
+        let root = std::env::temp_dir().join(format!("sophoni-confirm-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("target.txt"), "x").unwrap();
+
+        let handler = mock_handler(false);
+        let tools = ToolDispatcher::new(root.clone())
+            .with_risk_level(RiskLevel::Relaxed)
+            .with_confirm_handler(handler.clone());
+
+        let result = tools.dispatch(&cmd_call("rm target.txt")).await.unwrap();
+
+        assert!(result.is_error, "用户拒绝后应返回错误");
+        assert!(result.content.contains("用户拒绝"));
+        assert!(handler.called.load(AtomicOrdering::Relaxed), "handler 应被调用");
+        // 文件应还在
+        assert!(root.join("target.txt").exists(), "拒绝后文件不应被删");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn run_command_require_confirm_without_handler_returns_error() {
+        let root = std::env::temp_dir().join(format!("sophoni-confirm-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+
+        // 无 handler（confirm_handler: None）
+        let tools = ToolDispatcher::new(root.clone())
+            .with_risk_level(RiskLevel::Relaxed);
+
+        let result = tools.dispatch(&cmd_call("rm target.txt")).await.unwrap();
+
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(result.is_error);
+        assert!(result.content.contains("无确认处理器"));
+    }
+
+    #[tokio::test]
+    async fn run_command_standard_denies_rm_without_handler_call() {
+        let root = std::env::temp_dir().join(format!("sophoni-confirm-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+
+        let handler = mock_handler(true);
+        let tools = ToolDispatcher::new(root.clone())
+            .with_risk_level(RiskLevel::Standard)
+            .with_confirm_handler(handler.clone());
+
+        let result = tools.dispatch(&cmd_call("rm target.txt")).await.unwrap();
+
+        let _ = std::fs::remove_dir_all(&root);
+        // Standard 模式直接 Deny，不走 handler
+        assert!(result.is_error);
+        assert!(result.content.contains("被拒绝"));
+        assert!(
+            !handler.called.load(AtomicOrdering::Relaxed),
+            "Standard 模式不应调用 handler"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_command_unrestricted_rm_in_workspace_no_confirm() {
+        let root = std::env::temp_dir().join(format!("sophoni-confirm-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("target.txt"), "x").unwrap();
+
+        let handler = mock_handler(true);
+        let tools = ToolDispatcher::new(root.clone())
+            .with_risk_level(RiskLevel::Unrestricted)
+            .with_confirm_handler(handler.clone());
+
+        let result = tools.dispatch(&cmd_call("rm target.txt")).await.unwrap();
+
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(!result.is_error, "工作区内 rm 应直接放行");
+        assert!(
+            !handler.called.load(AtomicOrdering::Relaxed),
+            "工作区内 rm 不应触发确认"
+        );
+    }
 }
