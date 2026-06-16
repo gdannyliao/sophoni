@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
 use uuid::Uuid;
 
-use super::domain::{Conversation, ConversationSummary, Workspace};
+use super::domain::{Conversation, ConversationMemory, ConversationSummary, Workspace};
 use super::errors::AppResult;
 
 pub struct Storage {
@@ -80,6 +80,10 @@ impl Storage {
         // migrations: 加 events_json 列（SQLite 没有 ADD COLUMN IF NOT EXISTS）
         let _ = self.conn.execute(
             "ALTER TABLE conversations ADD COLUMN events_json TEXT NOT NULL DEFAULT '[]'",
+            [],
+        );
+        let _ = self.conn.execute(
+            "ALTER TABLE conversations ADD COLUMN category TEXT",
             [],
         );
         Ok(())
@@ -284,6 +288,47 @@ impl Storage {
         self.conn.execute(
             "UPDATE conversations SET title = ?1, updated_at = ?2 WHERE id = ?3",
             params![title, now, id.to_string()],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_conversation_memories(
+        &self,
+        workspace_id: &Uuid,
+    ) -> AppResult<Vec<ConversationMemory>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT category, title, updated_at FROM conversations WHERE workspace_id = ?1 ORDER BY updated_at ASC",
+        )?;
+        let mut rows = stmt.query(params![workspace_id.to_string()])?;
+        let mut memories = Vec::new();
+        while let Some(row) = rows.next()? {
+            let category: Option<String> = row.get(0)?;
+            let updated_at: String = row.get(2)?;
+            memories.push(ConversationMemory {
+                category,
+                summary: row.get(1)?,
+                updated_at: DateTime::parse_from_rfc3339(&updated_at)
+                    .map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            2,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        )
+                    })?
+                    .with_timezone(&Utc),
+            });
+        }
+        Ok(memories)
+    }
+
+    pub fn update_conversation_category(
+        &self,
+        id: &Uuid,
+        category: &str,
+    ) -> AppResult<()> {
+        self.conn.execute(
+            "UPDATE conversations SET category = ?1 WHERE id = ?2",
+            params![category, id.to_string()],
         )?;
         Ok(())
     }

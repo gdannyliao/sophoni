@@ -59,6 +59,14 @@ pub struct ConversationSummary {
     pub updated_at: DateTime<Utc>,
 }
 
+
+#[derive(Debug, Clone)]
+pub struct ConversationMemory {
+    pub category: Option<String>,
+    pub summary: String,
+    pub updated_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskRun {
