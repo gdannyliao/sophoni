@@ -46,7 +46,16 @@ pub struct Conversation {
     pub id: Uuid,
     pub workspace_id: Uuid,
     pub title: String,
+    pub events_json: String,
     pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationSummary {
+    pub id: Uuid,
+    pub title: String,
     pub updated_at: DateTime<Utc>,
 }
 
