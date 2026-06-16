@@ -327,13 +327,9 @@ mod tests {
             config_dir.join("config.toml"),
             "active = \"glm\"\n[glm]\napi_key = \"sk-glm\"\n[minimax]\napi_key = \"sk-mm\"\nmodel = \"MiniMax-M3\"\n",
         ).unwrap();
-        let orig_home = std::env::var("HOME").ok();
-        std::env::set_var("HOME", &temp);
 
-        let (cfg, provider) = AgentConfig::load().unwrap();
+        let (cfg, provider) = with_home_dir(&temp, || AgentConfig::load().unwrap());
 
-        if let Some(h) = orig_home { std::env::set_var("HOME", h); }
-        else { std::env::remove_var("HOME"); }
         let _ = std::fs::remove_dir_all(&temp);
 
         assert_eq!(provider, "glm");
@@ -350,13 +346,9 @@ mod tests {
             config_dir.join("config.toml"),
             "active = \"minimax\"\n[glm]\napi_key = \"sk-glm\"\n[minimax]\napi_key = \"sk-mm\"\nmodel = \"MiniMax-M3\"\n",
         ).unwrap();
-        let orig_home = std::env::var("HOME").ok();
-        std::env::set_var("HOME", &temp);
 
-        let (cfg, provider) = AgentConfig::load().unwrap();
+        let (cfg, provider) = with_home_dir(&temp, || AgentConfig::load().unwrap());
 
-        if let Some(h) = orig_home { std::env::set_var("HOME", h); }
-        else { std::env::remove_var("HOME"); }
         let _ = std::fs::remove_dir_all(&temp);
 
         assert_eq!(provider, "minimax");
@@ -374,13 +366,9 @@ mod tests {
             config_dir.join("config.toml"),
             "active = \"unknown\"\n[glm]\napi_key = \"sk\"\n",
         ).unwrap();
-        let orig_home = std::env::var("HOME").ok();
-        std::env::set_var("HOME", &temp);
 
-        let result = AgentConfig::load();
+        let result = with_home_dir(&temp, AgentConfig::load);
 
-        if let Some(h) = orig_home { std::env::set_var("HOME", h); }
-        else { std::env::remove_var("HOME"); }
         let _ = std::fs::remove_dir_all(&temp);
 
         assert!(result.is_err());
@@ -395,13 +383,9 @@ mod tests {
             config_dir.join("config.toml"),
             "active = \"minimax\"\n[glm]\napi_key = \"sk\"\n",
         ).unwrap();
-        let orig_home = std::env::var("HOME").ok();
-        std::env::set_var("HOME", &temp);
 
-        let result = AgentConfig::load();
+        let result = with_home_dir(&temp, AgentConfig::load);
 
-        if let Some(h) = orig_home { std::env::set_var("HOME", h); }
-        else { std::env::remove_var("HOME"); }
         let _ = std::fs::remove_dir_all(&temp);
 
         assert!(result.is_err());
