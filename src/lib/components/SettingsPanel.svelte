@@ -16,15 +16,61 @@
   });
 </script>
 
-<section class="settings" aria-label="设置">
-  <h2>设置</h2>
-  {#if status}
-    <p>Provider: {status.provider}</p>
-    <p>状态: {status.configured ? `已配置 (model: ${status.model})` : "未配置"}</p>
-    {#if !status.configured}
-      <p class="muted">请在 <code>~/.config/sophoni/config.toml</code> 配置 Provider，参考 README。</p>
+<div class="settings-panel" role="dialog" aria-modal="true" aria-label="设置" data-testid="settings-panel">
+  <div class="settings-header">
+    <h2>设置</h2>
+    <button class="btn icon-only" on:click={onClose}>✕</button>
+  </div>
+  <div class="settings-body">
+    {#if status}
+      <div class="settings-row">
+        <span class="label">Provider</span>
+        <span>{status.provider}</span>
+      </div>
+      <div class="settings-row">
+        <span class="label">状态</span>
+        <span class={status.configured ? "status-ok" : "status-err"}>
+          {status.configured ? "已配置" : "未配置"}
+        </span>
+      </div>
+      <div class="settings-row">
+        <span class="label">模型</span>
+        <span class="mono">{status.model}</span>
+      </div>
+      {#if !status.configured}
+        <p class="hint">请在 <code>~/.config/sophoni/config.toml</code> 配置 Provider，参考 README。</p>
+      {/if}
     {/if}
-  {/if}
-  <label>当前模型 <input value={status?.model ?? "(未配置)"} readonly /></label>
-  <button type="button" on:click={onClose}>关闭</button>
-</section>
+  </div>
+</div>
+
+<style>
+  .settings-panel {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    min-width: 400px;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+  }
+  .settings-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: var(--space-4) var(--space-6);
+    border-bottom: 1px solid var(--border);
+  }
+  .settings-header h2 { margin: 0; font-size: 16px; }
+  .settings-body { padding: var(--space-4) var(--space-6); }
+  .settings-row {
+    display: flex;
+    justify-content: space-between;
+    padding: var(--space-2) 0;
+  }
+  .label { color: var(--text-secondary); font-size: 13px; }
+  .mono { font-family: var(--font-mono); font-size: 13px; }
+  .status-ok { color: var(--success); }
+  .status-err { color: var(--danger); }
+  .hint { font-size: 12px; color: var(--text-secondary); margin-top: var(--space-3); }
+  code { font-family: var(--font-mono); }
+  .icon-only { padding: var(--space-1) var(--space-2); }
+</style>
