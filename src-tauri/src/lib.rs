@@ -5,9 +5,14 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use core::agent::{run_agent_task as run_agent_task_inner, run_mock_agent_task, AgentTaskResult, EventSink};
+use core::agent::{
+    run_agent_task as run_agent_task_inner, run_mock_agent_task, AgentTaskResult, EventSink,
+};
 use core::command_risk::{classify_command, CommandRisk, RiskLevel};
-use core::domain::{AgentConfig, AgentEvent, ConfigStatus, Conversation, ConversationSummary, ConversationTurn, SystemPrompt};
+use core::domain::{
+    AgentConfig, AgentEvent, ConfigStatus, Conversation, ConversationSummary, ConversationTurn,
+    SystemPrompt,
+};
 use core::errors::AppError;
 use core::provider::OpenAICompatibleProvider;
 use core::storage::Storage;
@@ -21,6 +26,8 @@ struct AppState {
     cancel: Arc<AtomicBool>,
     confirm_pending: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>,
     storage: Arc<Mutex<Storage>>,
+    server_state: core::server::ServerState,
+    server_port: Arc<std::sync::atomic::AtomicU16>,
 }
 
 struct AppEventSink {
@@ -77,10 +84,7 @@ fn classify_command_risk(command: String, workspace_root: String) -> CommandRisk
 }
 
 #[tauri::command]
-fn run_mock_task(
-    workspace_root: String,
-    prompt: String,
-) -> Result<AgentTaskResult, AppError> {
+fn run_mock_task(workspace_root: String, prompt: String) -> Result<AgentTaskResult, AppError> {
     run_mock_agent_task(PathBuf::from(workspace_root), &prompt)
 }
 
@@ -191,7 +195,16 @@ fn resolve_conversation(
     storage: &Storage,
     workspace_id: &uuid::Uuid,
     existing_conversation_id: Option<&str>,
-) -> Result<(Conversation, bool, Vec<ConversationTurn>, String, Vec<String>), AppError> {
+) -> Result<
+    (
+        Conversation,
+        bool,
+        Vec<ConversationTurn>,
+        String,
+        Vec<String>,
+    ),
+    AppError,
+> {
     // 复用分支：existing_conversation_id 合法且会话存在
     if let Some(id_str) = existing_conversation_id {
         if let Ok(id) = uuid::Uuid::parse_str(id_str) {
@@ -207,7 +220,13 @@ fn resolve_conversation(
                     .collect::<std::collections::HashSet<_>>()
                     .into_iter()
                     .collect();
-                return Ok((conv, false, history_turns, memory_context, existing_categories));
+                return Ok((
+                    conv,
+                    false,
+                    history_turns,
+                    memory_context,
+                    existing_categories,
+                ));
             }
         }
     }
@@ -224,27 +243,29 @@ fn resolve_conversation(
     Ok((conv, true, vec![], memory_context, existing_categories))
 }
 
-#[tauri::command]
-async fn run_agent_task(
-    state: State<'_, AppState>,
-    app: AppHandle,
+/// 传输无关的 agent 任务核心逻辑。IPC（Tauri command）和 HTTP（axum handler）共用。
+/// confirm_handler 决定高危命令确认去哪（IPC 的 TauriConfirmHandler / HTTP 的自动放行），
+/// sink 决定事件去哪（IPC 的 AppEventSink / HTTP 的 SseEventSink）。
+pub(crate) async fn run_agent_task_core(
     prompt: String,
     existing_conversation_id: Option<String>,
+    cancel: Arc<AtomicBool>,
+    confirm_handler: Arc<dyn ConfirmHandler>,
+    sink: Arc<dyn EventSink>,
 ) -> Result<AgentTaskResult, AppError> {
-    state.cancel.store(false, Ordering::Relaxed);
-    tracing::info!(%prompt, "ipc run_agent_task");
+    cancel.store(false, Ordering::Relaxed);
+    tracing::info!(%prompt, "agent task started (core)");
 
     let (config, _provider) = AgentConfig::load()?;
     let risk_level = config.risk_level;
     let search_config = config.search_config.clone();
     let (workspace, workspace_mode) = match &config.workspace_path {
         Some(path) => (path.clone(), core::tools::WorkspaceMode::Full),
-        None => ("/tmp/sophoni-chat".to_string(), core::tools::WorkspaceMode::ChatOnly),
+        None => (
+            "/tmp/sophoni-chat".to_string(),
+            core::tools::WorkspaceMode::ChatOnly,
+        ),
     };
-    let confirm_handler: Arc<dyn ConfirmHandler> = Arc::new(TauriConfirmHandler {
-        app: app.clone(),
-        pending: state.confirm_pending.clone(),
-    });
     let fs = WorkspaceFs::new(PathBuf::from(&workspace));
     let http_client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
@@ -259,10 +280,8 @@ async fn run_agent_task(
     );
     let registry = Arc::new(registry);
     let provider = OpenAICompatibleProvider::new(config, registry.clone());
-    let sink = AppEventSink { app };
 
     // 在 async 外创建/复用 conversation + 读历史 turns 与记忆（Storage/Connection 不是 Send，不能跨 await）
-    // resolve_conversation 返回 (conv, is_new, history_turns, memory_context, existing_categories)
     let (conversation, is_new, history_turns, memory_context, existing_categories) = {
         let home = dirs::home_dir().ok_or_else(|| AppError::Config("no HOME".into()))?;
         let db_path = home.join(".config/sophoni/sophoni.db");
@@ -276,8 +295,8 @@ async fn run_agent_task(
         &registry,
         risk_level,
         workspace_mode,
-        &sink,
-        &state.cancel,
+        sink.as_ref(),
+        &cancel,
         SystemPrompt(String::new()),
         prompt,
         vec![],
@@ -294,8 +313,6 @@ async fn run_agent_task(
         let db_path = home.join(".config/sophoni/sophoni.db");
         let storage = Storage::open(&db_path)?;
 
-        // events：复用会话时合并历史 events + 本轮 events，保证前端能完整回放历史 UI；
-        // 新会话直接写本轮 events。turns 始终写「历史 + 本轮」的完整累积。
         let final_events: Vec<AgentEvent> = if is_new {
             result.events.clone()
         } else {
@@ -309,14 +326,11 @@ async fn run_agent_task(
         let events_json = serde_json::to_string(&final_events).unwrap_or_else(|_| "[]".to_string());
         let _ = storage.update_conversation_events(&conversation.id, &events_json);
 
-        // turns：本轮 run_agent_task 返回的是「历史 + 本轮」完整 turns，直接整体写入
         let turns_json = serde_json::to_string(&result.turns).unwrap_or_else(|_| "[]".to_string());
         let _ = storage.update_conversation_turns(&conversation.id, &turns_json);
 
-        // 先去掉 <think> 标签，再解析 category
         let clean_text = core::agent::strip_think_tags(&result.summary);
         let (category, clean_summary) = core::agent::parse_category(&clean_text);
-        // 新会话用本轮 summary 作标题；复用会话保留原标题（避免后续消息覆盖掉首条标题）
         if is_new {
             let title = if clean_summary.is_empty() {
                 conversation.id.to_string()
@@ -331,6 +345,29 @@ async fn run_agent_task(
     }
 
     Ok(result)
+}
+
+#[tauri::command]
+async fn run_agent_task(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    prompt: String,
+    existing_conversation_id: Option<String>,
+) -> Result<AgentTaskResult, AppError> {
+    tracing::info!(%prompt, "ipc run_agent_task");
+    let confirm_handler = Arc::new(TauriConfirmHandler {
+        app: app.clone(),
+        pending: state.confirm_pending.clone(),
+    }) as Arc<dyn ConfirmHandler>;
+    let sink = Arc::new(AppEventSink { app }) as Arc<dyn EventSink>;
+    run_agent_task_core(
+        prompt,
+        existing_conversation_id,
+        state.cancel.clone(),
+        confirm_handler,
+        sink,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -352,19 +389,16 @@ async fn get_conversation(
     id: String,
 ) -> Result<Conversation, AppError> {
     let storage = state.storage.lock().await;
-    let uuid = uuid::Uuid::parse_str(&id)
-        .map_err(|e| AppError::Config(format!("无效会话 ID: {e}")))?;
+    let uuid =
+        uuid::Uuid::parse_str(&id).map_err(|e| AppError::Config(format!("无效会话 ID: {e}")))?;
     Ok(storage.get_conversation(&uuid)?)
 }
 
 #[tauri::command]
-async fn delete_conversation(
-    state: State<'_, AppState>,
-    id: String,
-) -> Result<(), AppError> {
+async fn delete_conversation(state: State<'_, AppState>, id: String) -> Result<(), AppError> {
     let storage = state.storage.lock().await;
-    let uuid = uuid::Uuid::parse_str(&id)
-        .map_err(|e| AppError::Config(format!("无效会话 ID: {e}")))?;
+    let uuid =
+        uuid::Uuid::parse_str(&id).map_err(|e| AppError::Config(format!("无效会话 ID: {e}")))?;
     storage.delete_conversation(&uuid)?;
     Ok(())
 }
@@ -372,6 +406,34 @@ async fn delete_conversation(
 #[tauri::command]
 fn cancel_agent_task(state: State<'_, AppState>) {
     state.cancel.store(true, Ordering::Relaxed);
+}
+
+#[derive(serde::Serialize)]
+struct PairQrCode {
+    url: String,
+    svg: String,
+    ip: String,
+    port: u16,
+    code: String,
+}
+
+/// 获取配对二维码（供桌面 UI「手机连接」面板展示）。
+#[tauri::command]
+async fn get_pair_qrcode(state: State<'_, AppState>) -> Result<PairQrCode, AppError> {
+    let port = state.server_port.load(Ordering::Relaxed);
+    let ip = core::server::qrcode::local_ip()
+        .map(|ip| ip.to_string())
+        .unwrap_or_else(|| "127.0.0.1".into());
+    let code = state.server_state.current_pair_code().await;
+    let url = core::server::qrcode::build_pair_url(&ip, port, &code);
+    let svg = core::server::qrcode::render_qr_svg(&url);
+    Ok(PairQrCode {
+        url,
+        svg,
+        ip,
+        port,
+        code,
+    })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -384,17 +446,54 @@ pub fn run() {
         )
         .init();
 
+    // 桌面端：SQLite + HTTP 服务层 + 全部 IPC command。
+    // 移动端：瘦客户端壳，不初始化 SQLite/HTTP 服务（数据走 HTTP 到桌面端）。
+    // 两条路径各自 run()，避免 Builder 泛型类型不匹配问题。
+    #[cfg(not(mobile))]
+    run_desktop();
+    #[cfg(mobile)]
+    run_mobile();
+}
+
+#[cfg(not(mobile))]
+fn run_desktop() {
     let home = dirs::home_dir().expect("no HOME directory");
     let db_path = home.join(".config/sophoni/sophoni.db");
     let storage = Storage::open(&db_path).expect("failed to open DB");
 
+    let server_state = core::server::ServerState::new();
+    let server_port: Arc<std::sync::atomic::AtomicU16> =
+        Arc::new(std::sync::atomic::AtomicU16::new(0));
+
     tauri::Builder::default()
+        .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
             cancel: Arc::new(AtomicBool::new(false)),
             confirm_pending: Arc::new(Mutex::new(HashMap::new())),
             storage: Arc::new(Mutex::new(storage)),
+            server_state: server_state.clone(),
+            server_port: server_port.clone(),
+        })
+        .setup({
+            let server_state = server_state.clone();
+            let server_port = server_port.clone();
+            move |_app| {
+                let router = core::server::build_router(server_state);
+                // 用 tauri::async_runtime::spawn（而非裸 tokio::spawn），
+                // 因为 setup 闭包不在 async context，裸 tokio::spawn 会 panic（no reactor）。
+                tauri::async_runtime::spawn(async move {
+                    let listener = tokio::net::TcpListener::bind("0.0.0.0:0")
+                        .await
+                        .expect("server bind failed");
+                    let port = listener.local_addr().expect("no local addr").port();
+                    server_port.store(port, Ordering::Relaxed);
+                    tracing::info!(port, "server: HTTP 服务启动");
+                    axum::serve(listener, router).await.expect("server error");
+                });
+                Ok(())
+            }
         })
         .invoke_handler(tauri::generate_handler![
             get_app_status,
@@ -413,7 +512,20 @@ pub fn run() {
             list_conversations,
             get_conversation,
             delete_conversation,
+            get_pair_qrcode,
         ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
+
+#[cfg(mobile)]
+fn run_mobile() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_barcode_scanner::init())
+        .plugin(tauri_plugin_os::init())
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
+        .invoke_handler(tauri::generate_handler![get_app_status,])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

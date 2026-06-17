@@ -77,3 +77,16 @@ export async function saveSearchConfig(config: SearchConfig): Promise<void> {
     googleCx: config.googleCx,
   });
 }
+
+/** 获取配对二维码（供桌面端「手机连接」面板展示）。含 IP/端口/配对码 + 二维码 SVG。 */
+export async function getPairQrcode(): Promise<PairQrCode> {
+  return invoke<PairQrCode>("get_pair_qrcode");
+}
+
+export interface PairQrCode {
+  url: string;
+  svg: string;
+  ip: string;
+  port: number;
+  code: string;
+}

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { getConfigStatus, getRiskLevel, setRiskLevel, getSearchConfig, saveSearchConfig } from "../api";
+  import { getConfigStatus, getRiskLevel, setRiskLevel, getSearchConfig, saveSearchConfig, getPairQrcode } from "../api";
+  import type { PairQrCode } from "../api";
   import type { ConfigStatus, RiskLevel, SearchConfig } from "../types";
 
   export let onClose: () => void = () => {};
@@ -9,6 +10,8 @@
   let riskLevel: RiskLevel = "standard";
   let searchConfig: SearchConfig = { tavilyKey: null, googleKey: null, googleCx: null };
   let searchSaved = false;
+  let pairQr: PairQrCode | null = null;
+  let pairLoading = false;
 
   onMount(async () => {
     try {
@@ -28,6 +31,17 @@
       // 未配置时保持默认空值
     }
   });
+
+  async function loadPairInfo() {
+    pairLoading = true;
+    try {
+      pairQr = await getPairQrcode();
+    } catch {
+      pairQr = null;
+    } finally {
+      pairLoading = false;
+    }
+  }
 
   async function onRiskLevelChange(e: Event) {
     const target = e.target as HTMLInputElement;
@@ -111,6 +125,32 @@
         {searchSaved ? "已保存" : "保存搜索配置"}
       </button>
     </div>
+
+    <div class="settings-row" style="margin-top: 16px;">
+      <span class="label">手机连接</span>
+      <button class="btn icon-only" data-testid="mobile-pair-toggle" on:click={loadPairInfo} disabled={pairLoading}>
+        {pairLoading ? "..." : pairQr ? "刷新" : "显示"}
+      </button>
+    </div>
+    {#if pairQr}
+      <div class="pair-panel" data-testid="pair-panel">
+        <div class="pair-qr" data-testid="pair-qr-svg">
+          <!-- 二维码 SVG 内联渲染 -->
+          {@html pairQr.svg}
+        </div>
+        <div class="pair-info">
+          <div class="pair-line">
+            <span class="label">地址</span>
+            <code class="mono">{pairQr.ip}:{pairQr.port}</code>
+          </div>
+          <div class="pair-line">
+            <span class="label">配对码</span>
+            <code class="mono pair-code" data-testid="pair-code-display">{pairQr.code}</code>
+          </div>
+          <p class="pair-hint">手机和电脑需在同一 Wi-Fi。配对码一次性，配对成功后自动轮换。</p>
+        </div>
+      </div>
+    {/if}
   </div>
 </div>
 
@@ -177,5 +217,45 @@
     color: var(--text-primary);
     font-family: var(--font-mono);
     font-size: 12px;
+  }
+  .pair-panel {
+    display: flex;
+    gap: var(--space-4);
+    padding: var(--space-3);
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    margin-top: var(--space-2);
+  }
+  .pair-qr {
+    width: 140px;
+    height: 140px;
+    flex-shrink: 0;
+  }
+  .pair-qr :global(svg) {
+    width: 100%;
+    height: 100%;
+  }
+  .pair-info {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+  .pair-line {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .pair-code {
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--accent);
+    letter-spacing: 2px;
+  }
+  .pair-hint {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-top: var(--space-1);
   }
 </style>

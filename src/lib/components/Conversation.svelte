@@ -1,5 +1,6 @@
 <script lang="ts">
   import { marked } from "marked";
+  import { tick } from "svelte";
   import type { AgentEvent } from "../types";
   import MessageBubble from "./MessageBubble.svelte";
   import ThoughtLine from "./ThoughtLine.svelte";
@@ -14,6 +15,7 @@
   export let workspacePath = "";
   export let title = "";
   export let changeCount = 0;
+  export let mobile = false;
   export let onRun: (prompt: string) => void = () => {};
   export let onCancel: () => void = () => {};
   export let onReview: () => void = () => {};
@@ -166,13 +168,20 @@
   }
 
   // token 到达或事件变化时，自动滚到底部，保证流式输出始终可见。
-  // streamingText 经 App.svelte 的 rAF 节流后每帧最多变一次，滚动开销可控。
   $: if (streamingText && messagesEl) {
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
+  // events 变化时（加载历史会话/新消息到达）也滚到底部。
+  // 用 tick 确保 DOM 已渲染最新 events 再滚，否则 scrollHeight 还是旧的。
+  $: if (events.length > 0) scrollToBottom();
+  async function scrollToBottom() {
+    await tick();
+    if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
 </script>
 
-<main class="conversation" data-testid="conversation">
+<main class="conversation" class:mobile data-testid="conversation">
+  {#if !mobile}
   <header class="topbar">
     <div class="topbar-left">
       <div>
@@ -187,6 +196,7 @@
       {/if}
     </button>
   </header>
+  {/if}
 
   <div class="messages" bind:this={messagesEl} aria-label="任务会话流">
     {#each turns as turn, i}
@@ -414,4 +424,36 @@
   }
   .composer input::placeholder { color: var(--text-secondary); }
   .cancel-btn { color: var(--danger); border-color: var(--danger); }
+
+  /* ── 移动端适配：mobile prop 为 true 时生效 ── */
+  .conversation.mobile .messages {
+    padding: var(--space-3);
+    gap: var(--space-2);
+  }
+  .conversation.mobile .composer {
+    padding: var(--space-2) var(--space-3);
+    /* 避开底部导航条 */
+    padding-bottom: max(env(safe-area-inset-bottom, 0px), 8px);
+  }
+  .conversation.mobile .composer input {
+    padding: var(--space-3) var(--space-4);
+    font-size: 16px; /* ≥16px 防 iOS/Android 自动缩放 */
+  }
+  .conversation.mobile .composer .btn {
+    padding: var(--space-3) var(--space-4);
+    font-size: 15px;
+    min-height: 44px; /* Apple HIG / Material 触控目标最小尺寸 */
+  }
+  .conversation.mobile .cancel-btn {
+    min-height: 44px;
+  }
+  .conversation.mobile :global(.message-bubble) {
+    font-size: 15px;
+  }
+  .conversation.mobile .summary-card {
+    font-size: 15px;
+  }
+  .conversation.mobile .error-card {
+    font-size: 14px;
+  }
 </style>
