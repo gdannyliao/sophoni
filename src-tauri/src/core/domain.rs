@@ -160,6 +160,7 @@ pub enum AgentToolName {
     WebSearch,
     WebFetch,
     MultiEditFile,
+    DeleteFile,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -201,6 +202,7 @@ pub enum AgentToolArgs {
     WebSearch { query: String, max_results: usize },
     WebFetch { url: String, max_chars: usize },
     MultiEditFile { path: String, edits: Vec<MultiEdit> },
+    DeleteFile { path: String },
 }
 
 /// multi_edit_file 的单处替换项。

@@ -158,6 +158,9 @@ impl ToolDispatcher {
                 AgentToolName::MultiEditFile,
                 AgentToolArgs::MultiEditFile { path, edits },
             ) => self.multi_edit_file(&call.id, path, edits).await,
+            (AgentToolName::DeleteFile, AgentToolArgs::DeleteFile { path }) => {
+                self.delete_file(&call.id, path).await
+            }
             (
                 AgentToolName::ReadAcceptanceReport,
                 AgentToolArgs::ReadAcceptanceReport { run_id },
@@ -533,6 +536,42 @@ impl ToolDispatcher {
         })
     }
 
+    /// 删除工作区内文件。删除前读内容生成 diff（让前端 Review 可见删了什么）。
+    /// 路径越界（../）直接拒绝。删除目录用 run_command（rmdir）。
+    async fn delete_file(&self, call_id: &str, path: &str) -> AppResult<AgentToolResult> {
+        let root = self.fs.root().to_path_buf();
+        let full = match resolve_within_root(&root, path) {
+            Ok(f) => f,
+            Err(e) => return Ok(tool_error(call_id, &e)),
+        };
+
+        // 读现有内容生成 diff（删除 = 旧内容 → 空）
+        let old_content = match self.fs.read_text(&full) {
+            Ok(c) => c,
+            Err(e) => return Ok(tool_error(call_id, &format!("读取失败: {e}"))),
+        };
+
+        if let Err(e) = std::fs::remove_file(&full) {
+            return Ok(tool_error(call_id, &format!("删除失败: {e}")));
+        }
+
+        let change = FileChange {
+            id: Uuid::new_v4(),
+            task_run_id: Uuid::new_v4(),
+            path: path.to_string(),
+            kind: ChangeKind::Deleted,
+            diff: super::diff::unified_diff(&old_content, ""),
+            created_at: Utc::now(),
+        };
+
+        Ok(AgentToolResult {
+            tool_call_id: call_id.to_string(),
+            content: format!("已删除 {path}"),
+            is_error: false,
+            file_change: Some(change),
+        })
+    }
+
     async fn read_acceptance_report(
         &self,
         call_id: &str,
@@ -820,7 +859,7 @@ pub(crate) fn truncate_output(s: &str, max_lines: usize, max_chars: usize) -> St
 
 #[cfg(test)]
 mod tests {
-    use super::super::domain::{AgentToolArgs, AgentToolCall, AgentToolName, MultiEdit};
+    use super::super::domain::{AgentToolArgs, AgentToolCall, AgentToolName, ChangeKind, MultiEdit};
     use super::super::test_support::TempWorkspace;
     use super::{truncate_output, ToolDispatcher};
     use std::fs;
@@ -932,6 +971,16 @@ mod tests {
             old_string: old.to_string(),
             new_string: new.to_string(),
             replace_all: false,
+        }
+    }
+
+    fn delete_call(path: &str) -> AgentToolCall {
+        AgentToolCall {
+            id: "call-delete".to_string(),
+            name: AgentToolName::DeleteFile,
+            arguments: AgentToolArgs::DeleteFile {
+                path: path.to_string(),
+            },
         }
     }
 
@@ -1752,6 +1801,65 @@ mod tests {
         assert!(change.diff.contains("+ONE"));
         assert!(change.diff.contains("-two"));
         assert!(change.diff.contains("+TWO"));
+    }
+
+    // ── delete_file 测试 ──
+
+    #[tokio::test]
+    async fn delete_file_removes_file_and_returns_deleted_change() {
+        let root = std::env::temp_dir().join(format!("sophoni-df-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("target.txt"), "content\n").unwrap();
+
+        let tools = ToolDispatcher::new(root.clone());
+        let result = tools.dispatch(&delete_call("target.txt")).await.unwrap();
+
+        assert!(!result.is_error);
+        assert!(!root.join("target.txt").exists(), "文件应被删除");
+        let change = result.file_change.expect("应有 file_change");
+        assert_eq!(change.kind, ChangeKind::Deleted);
+        assert_eq!(change.path, "target.txt");
+        assert!(change.diff.contains("-content"), "diff 应显示被删内容");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn delete_file_outside_root_is_error() {
+        let root = std::env::temp_dir().join(format!("sophoni-df-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+
+        let tools = ToolDispatcher::new(root.clone());
+        let result = tools.dispatch(&delete_call("../outside.txt")).await.unwrap();
+
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(result.is_error);
+        assert!(result.content.contains("越界"));
+    }
+
+    #[tokio::test]
+    async fn delete_file_nonexistent_is_error() {
+        let root = std::env::temp_dir().join(format!("sophoni-df-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+
+        let tools = ToolDispatcher::new(root.clone());
+        let result = tools.dispatch(&delete_call("nope.txt")).await.unwrap();
+
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(result.is_error);
+    }
+
+    #[tokio::test]
+    async fn delete_file_rejects_directory() {
+        let root = std::env::temp_dir().join(format!("sophoni-df-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("subdir")).unwrap();
+
+        let tools = ToolDispatcher::new(root.clone());
+        // remove_file 对目录会失败，返回错误（删除目录应用 run_command rmdir）
+        let result = tools.dispatch(&delete_call("subdir")).await.unwrap();
+
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(result.is_error);
     }
 
     #[tokio::test]

@@ -83,6 +83,7 @@ fn system_prompt(
 - read_file：读取指定文件内容。
 - write_file：写入整个文件（新建或大改时用）。
 - edit_file：精确替换文件中的一段文本（小改时用，比 write_file 省 token）。
+- delete_file：删除工作区内文件。删除目录用 run_command（rmdir）。
 {run_cmd_line}
 - list_acceptance_runs：列出最近验收运行 ID。
 - read_acceptance_report：读取验收报告 report.json，可不传 run_id 读取最新一次。
@@ -518,6 +519,17 @@ fn tool_schemas(level: super::command_risk::RiskLevel, mode: super::tools::Works
             }),
         },
         AgentToolSchema {
+            name: "delete_file",
+            description: "删除工作区内指定文件。删除目录请用 run_command（rmdir）。删除不可撤销。".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "相对工作区根的文件路径" }
+                },
+                "required": ["path"]
+            }),
+        },
+        AgentToolSchema {
             name: "run_command",
             description: command_description(level),
             parameters: serde_json::json!({
@@ -678,6 +690,9 @@ fn tool_call_event(call: &AgentToolCall) -> AgentEvent {
             }
             AgentToolArgs::MultiEditFile { path, edits } => {
                 ("multi_edit_file", path.clone(), format!("path: {path}\nedits: {} 处", edits.len()))
+            }
+            AgentToolArgs::DeleteFile { path } => {
+                ("delete_file", path.clone(), format!("path: {path}"))
             }
         };
     AgentEvent {

@@ -267,6 +267,10 @@ impl OpenAICompatibleProvider {
                 "multi_edit_file",
                 serde_json::json!({ "path": path, "edits": edits }),
             ),
+            AgentToolArgs::DeleteFile { path } => (
+                "delete_file",
+                serde_json::json!({ "path": path }),
+            ),
         };
         OpenAIToolCall {
             id: call.id.clone(),
@@ -324,6 +328,7 @@ impl OpenAICompatibleProvider {
             "web_search" => AgentToolName::WebSearch,
             "web_fetch" => AgentToolName::WebFetch,
             "multi_edit_file" => AgentToolName::MultiEditFile,
+            "delete_file" => AgentToolName::DeleteFile,
             other => return Err(AppError::Provider(format!("unknown tool: {other}"))),
         };
         let args: serde_json::Value = serde_json::from_str(&gtc.function.arguments)
@@ -423,6 +428,10 @@ impl OpenAICompatibleProvider {
                     return Err(AppError::Provider(format!("{tool} edits 不能为空")));
                 }
                 AgentToolArgs::MultiEditFile { path, edits }
+            }
+            AgentToolName::DeleteFile => {
+                let path = req_str(&args, "path", tool)?;
+                AgentToolArgs::DeleteFile { path }
             }
         };
         Ok(AgentToolCall {
