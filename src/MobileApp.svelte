@@ -1,17 +1,22 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import PairingView from "./lib/components/PairingView.svelte";
+  import ConversationList from "./lib/components/ConversationList.svelte";
   import Conversation from "./lib/components/Conversation.svelte";
   import type { AgentEvent, ConversationSummary } from "./lib/types";
-  import { hasConnection, clearConnection, loadConnection } from "./lib/mobile/connection";
+  import { hasConnection, clearConnection } from "./lib/mobile/connection";
   import {
     listConversations,
     getConversation,
     runAgentTask,
   } from "./lib/mobile/mobile-api";
 
-  // 配对状态：未配对显示 PairingView，已配对显示主界面
+  // 配对状态
   let paired = hasConnection();
+
+  // 视图导航：列表 ↔ 详情
+  type View = "list" | "conversation";
+  let view: View = "list";
 
   // 会话状态
   let conversations: ConversationSummary[] = [];
@@ -22,7 +27,7 @@
   let streamingText = "";
   let currentCancel: (() => void) | null = null;
 
-  // token rAF 节流（与桌面端一致，避免高频 token 卡 UI）
+  // token rAF 节流
   let pendingBuffer = "";
   let rafScheduled = false;
 
@@ -48,7 +53,6 @@
     try {
       conversations = await listConversations();
     } catch (e) {
-      // 401 表示连接失效，回到配对页
       if (String(e).includes("失效") || String(e).includes("401")) {
         handleDisconnect();
       }
@@ -57,6 +61,7 @@
 
   function handlePaired() {
     paired = true;
+    view = "list";
     refreshConversations();
   }
 
@@ -66,24 +71,33 @@
     conversations = [];
     events = [];
     activeConversationId = null;
+    view = "list";
   }
 
-  async function selectConversation(id: string) {
+  async function openConversation(id: string) {
     activeConversationId = id;
+    events = [];
+    streamingText = "";
+    view = "conversation";
     try {
       const conv = await getConversation(id);
-      const convEvents: AgentEvent[] = JSON.parse(conv.eventsJson || "[]");
-      events = convEvents;
-        streamingText = "";
+      events = JSON.parse(conv.eventsJson || "[]");
     } catch {
-      // 加载失败保持空
+      // 加载失败保留空
     }
   }
 
-  async function newConversation() {
+  function startNewConversation() {
     activeConversationId = null;
     events = [];
     streamingText = "";
+    view = "conversation";
+  }
+
+  function backToList() {
+    currentCancel?.();
+    view = "list";
+    refreshConversations();
   }
 
   async function runTask(task: string) {
@@ -140,32 +154,27 @@
     }
   }
 
-  async function cancel() {
+  function cancel() {
     currentCancel?.();
   }
 </script>
 
 {#if !paired}
   <PairingView onPaired={handlePaired} />
+{:else if view === "list"}
+  <ConversationList
+    {conversations}
+    onSelect={openConversation}
+    onNew={startNewConversation}
+    onDisconnect={handleDisconnect}
+  />
 {:else}
-  <div class="mobile-shell" data-testid="mobile-app">
-    <!-- 顶部：会话切换 + 断开 -->
-    <header class="mobile-header">
-      <select
-        class="conv-select"
-        value={activeConversationId ?? ""}
-        on:change={(e) => {
-          const v = (e.target as HTMLSelectElement).value;
-          if (v === "") newConversation();
-          else selectConversation(v);
-        }}
-      >
-        <option value="">+ 新对话</option>
-        {#each conversations as conv (conv.id)}
-          <option value={conv.id}>{conv.title}</option>
-        {/each}
-      </select>
-      <button class="btn-icon" on:click={handleDisconnect} aria-label="断开连接">断开</button>
+  <div class="conv-detail" data-testid="mobile-app">
+    <header class="detail-header">
+      <button class="back-btn" data-testid="back-btn" on:click={backToList} aria-label="返回列表">←</button>
+      <span class="detail-title">
+        {activeConversationId ? "会话" : "新对话"}
+      </span>
     </header>
 
     <Conversation
@@ -183,40 +192,31 @@
 {/if}
 
 <style>
-  .mobile-shell {
+  .conv-detail {
     display: flex;
     flex-direction: column;
     height: 100vh;
   }
-  .mobile-header {
+  .detail-header {
     display: flex;
     align-items: center;
     gap: var(--space-2);
-    /* padding-top 用 safe-area-inset-top 避开 Android 状态栏 / iOS 刘海。 */
-    /* max(env(), 28px)：env 在部分 Android 返回 0，28px 覆盖典型状态栏高度 */
     padding: max(env(safe-area-inset-top, 0px), 28px) var(--space-3) var(--space-2);
     background: var(--bg-secondary);
     border-bottom: 1px solid var(--border);
   }
-  .conv-select {
-    flex: 1;
-    background: var(--bg-primary);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    padding: var(--space-3) var(--space-4);
-    color: var(--text-primary);
-    font-size: 15px;
-    min-height: 44px; /* 触控目标最小尺寸 */
-  }
-  .btn-icon {
+  .back-btn {
     background: none;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    padding: var(--space-2) var(--space-4);
-    color: var(--text-secondary);
+    border: 0;
+    color: var(--accent-bg, #4a9eff);
+    font-size: 22px;
+    padding: var(--space-2) var(--space-3);
     cursor: pointer;
-    font-size: 14px;
     min-height: 44px;
-    white-space: nowrap;
+    min-width: 44px;
+  }
+  .detail-title {
+    font-size: 16px;
+    font-weight: 600;
   }
 </style>
