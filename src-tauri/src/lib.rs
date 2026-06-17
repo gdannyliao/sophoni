@@ -22,6 +22,13 @@ use core::workspace::WorkspaceFs;
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::{oneshot, Mutex};
 
+/// sophoni 的 SQLite 数据库路径（~/.config/sophoni/sophoni.db）。
+/// 集中定义，消灭此前 3 处硬编码重复。
+fn db_path() -> Result<std::path::PathBuf, AppError> {
+    let home = dirs::home_dir().ok_or_else(|| AppError::Config("no HOME".into()))?;
+    Ok(home.join(".config/sophoni/sophoni.db"))
+}
+
 struct AppState {
     cancel: Arc<AtomicBool>,
     confirm_pending: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>,
@@ -283,9 +290,7 @@ pub(crate) async fn run_agent_task_core(
 
     // 在 async 外创建/复用 conversation + 读历史 turns 与记忆（Storage/Connection 不是 Send，不能跨 await）
     let (conversation, is_new, history_turns, memory_context, existing_categories) = {
-        let home = dirs::home_dir().ok_or_else(|| AppError::Config("no HOME".into()))?;
-        let db_path = home.join(".config/sophoni/sophoni.db");
-        let storage = Storage::open(&db_path)?;
+        let storage = Storage::open(&db_path()?)?;
         let ws = storage.get_or_create_workspace(&workspace)?;
         resolve_conversation(&storage, &ws.id, existing_conversation_id.as_deref())?
     };
@@ -307,44 +312,52 @@ pub(crate) async fn run_agent_task_core(
     )
     .await?;
 
-    // 任务结束后写 DB（同步，不跨 await）+ 解析 category
-    {
-        let home = dirs::home_dir().ok_or_else(|| AppError::Config("no HOME".into()))?;
-        let db_path = home.join(".config/sophoni/sophoni.db");
-        let storage = Storage::open(&db_path)?;
-
-        let final_events: Vec<AgentEvent> = if is_new {
-            result.events.clone()
-        } else {
-            let history_events: Vec<AgentEvent> = storage
-                .get_conversation(&conversation.id)
-                .ok()
-                .and_then(|c| serde_json::from_str(&c.events_json).ok())
-                .unwrap_or_default();
-            [history_events, result.events.clone()].concat()
-        };
-        let events_json = serde_json::to_string(&final_events).unwrap_or_else(|_| "[]".to_string());
-        let _ = storage.update_conversation_events(&conversation.id, &events_json);
-
-        let turns_json = serde_json::to_string(&result.turns).unwrap_or_else(|_| "[]".to_string());
-        let _ = storage.update_conversation_turns(&conversation.id, &turns_json);
-
-        let clean_text = core::agent::strip_think_tags(&result.summary);
-        let (category, clean_summary) = core::agent::parse_category(&clean_text);
-        if is_new {
-            let title = if clean_summary.is_empty() {
-                conversation.id.to_string()
-            } else {
-                clean_summary.clone()
-            };
-            let _ = storage.update_conversation_title(&conversation.id, &title);
-        }
-        if let Some(cat) = &category {
-            let _ = storage.update_conversation_category(&conversation.id, cat);
-        }
-    }
-
+    persist_task_result(&conversation.id, is_new, &result)?;
     Ok(result)
+}
+
+/// 任务结束后写 DB：合并 events、写 turns、解析 category、更新标题。
+/// 抽成独立函数让编排逻辑可测（不依赖 Tauri runtime）。
+fn persist_task_result(
+    conversation_id: &uuid::Uuid,
+    is_new: bool,
+    result: &AgentTaskResult,
+) -> Result<(), AppError> {
+    let storage = Storage::open(&db_path()?)?;
+
+    // events：复用会话时合并历史 events + 本轮 events；新会话直接写本轮
+    let final_events: Vec<AgentEvent> = if is_new {
+        result.events.clone()
+    } else {
+        let history_events: Vec<AgentEvent> = storage
+            .get_conversation(conversation_id)
+            .ok()
+            .and_then(|c| serde_json::from_str(&c.events_json).ok())
+            .unwrap_or_default();
+        [history_events, result.events.clone()].concat()
+    };
+    let events_json = serde_json::to_string(&final_events).unwrap_or_else(|_| "[]".to_string());
+    let _ = storage.update_conversation_events(conversation_id, &events_json);
+
+    // turns：本轮返回的是「历史 + 本轮」完整 turns，整体写入
+    let turns_json = serde_json::to_string(&result.turns).unwrap_or_else(|_| "[]".to_string());
+    let _ = storage.update_conversation_turns(conversation_id, &turns_json);
+
+    // category + 标题（仅新会话更新标题）
+    let clean_text = core::agent::strip_think_tags(&result.summary);
+    let (category, clean_summary) = core::agent::parse_category(&clean_text);
+    if is_new {
+        let title = if clean_summary.is_empty() {
+            conversation_id.to_string()
+        } else {
+            clean_summary.clone()
+        };
+        let _ = storage.update_conversation_title(conversation_id, &title);
+    }
+    if let Some(cat) = &category {
+        let _ = storage.update_conversation_category(conversation_id, cat);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -457,8 +470,7 @@ pub fn run() {
 
 #[cfg(not(mobile))]
 fn run_desktop() {
-    let home = dirs::home_dir().expect("no HOME directory");
-    let db_path = home.join(".config/sophoni/sophoni.db");
+    let db_path = db_path().expect("no HOME directory");
     let storage = Storage::open(&db_path).expect("failed to open DB");
 
     let server_state = core::server::ServerState::new();
