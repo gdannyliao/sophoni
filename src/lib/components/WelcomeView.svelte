@@ -76,7 +76,8 @@
             on:click={() => onSelectConversation(conv.id)}
             on:keydown={(e) => e.key === "Enter" && onSelectConversation(conv.id)}
           >
-            <span>💬</span> {conv.title}
+            <span class="recent-icon">💬</span>
+            <span class="recent-title" title={conv.title}>{conv.title}</span>
           </div>
         {/each}
       </div>
@@ -195,6 +196,15 @@
     font-size: 13px;
     cursor: pointer;
     margin-bottom: var(--space-1);
+    min-width: 0;
   }
   .recent-item:hover { background: var(--bg-tertiary); }
+  .recent-icon { flex-shrink: 0; }
+  .recent-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    min-width: 0;
+  }
 </style>
