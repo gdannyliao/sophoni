@@ -1,13 +1,12 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { getConfigStatus, getRiskLevel, setRiskLevel, getSearchConfig, saveSearchConfig, getPairQrcode } from "../api";
+  import { getConfigStatus, getSearchConfig, saveSearchConfig, getPairQrcode } from "../api";
   import type { PairQrCode } from "../api";
-  import type { ConfigStatus, RiskLevel, SearchConfig } from "../types";
+  import type { ConfigStatus, SearchConfig } from "../types";
 
   export let onClose: () => void = () => {};
 
   let status: ConfigStatus | null = null;
-  let riskLevel: RiskLevel = "standard";
   let searchConfig: SearchConfig = { tavilyKey: null, googleKey: null, googleCx: null };
   let searchSaved = false;
   let pairQr: PairQrCode | null = null;
@@ -18,11 +17,6 @@
       status = await getConfigStatus();
     } catch {
       status = { configured: false, provider: "(查询失败)", model: "(查询失败)" };
-    }
-    try {
-      riskLevel = await getRiskLevel();
-    } catch {
-      // 默认 standard
     }
     try {
       const sc = await getSearchConfig();
@@ -41,12 +35,6 @@
     } finally {
       pairLoading = false;
     }
-  }
-
-  async function onRiskLevelChange(e: Event) {
-    const target = e.target as HTMLInputElement;
-    riskLevel = target.value as RiskLevel;
-    await setRiskLevel(riskLevel);
   }
 
   async function onSaveSearch() {
@@ -86,23 +74,6 @@
       {/if}
     {/if}
 
-    <div class="settings-row" style="margin-top: {status ? '16px' : '0'};">
-      <span class="label">风险等级</span>
-    </div>
-    <div class="risk-options" data-testid="risk-level-options">
-      <label class="risk-option">
-        <input type="radio" name="riskLevel" value="standard" data-testid="risk-level-standard" checked={riskLevel === "standard"} on:change={onRiskLevelChange} />
-        <span>标准</span>
-      </label>
-      <label class="risk-option">
-        <input type="radio" name="riskLevel" value="relaxed" data-testid="risk-level-relaxed" checked={riskLevel === "relaxed"} on:change={onRiskLevelChange} />
-        <span>宽松</span>
-      </label>
-      <label class="risk-option">
-        <input type="radio" name="riskLevel" value="unrestricted" data-testid="risk-level-unrestricted" checked={riskLevel === "unrestricted"} on:change={onRiskLevelChange} />
-        <span>完全访问</span>
-      </label>
-    </div>
 
     <div class="settings-row" style="margin-top: 16px;">
       <span class="label">网络搜索</span>
@@ -183,19 +154,6 @@
   .hint { font-size: 12px; color: var(--text-secondary); margin-top: var(--space-3); }
   code { font-family: var(--font-mono); }
   .icon-only { padding: var(--space-1) var(--space-2); }
-  .risk-options {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2);
-    padding: var(--space-2) 0;
-  }
-  .risk-option {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    font-size: 13px;
-    cursor: pointer;
-  }
   .search-config {
     display: flex;
     flex-direction: column;
