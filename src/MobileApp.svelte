@@ -165,7 +165,7 @@
           <option value={conv.id}>{conv.title}</option>
         {/each}
       </select>
-      <button class="btn-icon" on:click={handleDisconnect} aria-label="断开连接">⏻</button>
+      <button class="btn-icon" on:click={handleDisconnect} aria-label="断开连接">断开</button>
     </header>
 
     <Conversation
@@ -175,6 +175,7 @@
       {running}
       workspacePath="移动端"
       changeCount={0}
+      mobile={true}
       onRun={runTask}
       onCancel={cancel}
     />
@@ -202,17 +203,20 @@
     background: var(--bg-primary);
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
-    padding: var(--space-2) var(--space-3);
+    padding: var(--space-3) var(--space-4);
     color: var(--text-primary);
-    font-size: 14px;
+    font-size: 15px;
+    min-height: 44px; /* 触控目标最小尺寸 */
   }
   .btn-icon {
     background: none;
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
-    padding: var(--space-2);
+    padding: var(--space-2) var(--space-4);
     color: var(--text-secondary);
     cursor: pointer;
-    font-size: 16px;
+    font-size: 14px;
+    min-height: 44px;
+    white-space: nowrap;
   }
 </style>

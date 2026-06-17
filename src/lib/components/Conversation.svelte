@@ -14,6 +14,7 @@
   export let workspacePath = "";
   export let title = "";
   export let changeCount = 0;
+  export let mobile = false;
   export let onRun: (prompt: string) => void = () => {};
   export let onCancel: () => void = () => {};
   export let onReview: () => void = () => {};
@@ -172,7 +173,8 @@
   }
 </script>
 
-<main class="conversation" data-testid="conversation">
+<main class="conversation" class:mobile data-testid="conversation">
+  {#if !mobile}
   <header class="topbar">
     <div class="topbar-left">
       <div>
@@ -187,6 +189,7 @@
       {/if}
     </button>
   </header>
+  {/if}
 
   <div class="messages" bind:this={messagesEl} aria-label="任务会话流">
     {#each turns as turn, i}
@@ -414,4 +417,36 @@
   }
   .composer input::placeholder { color: var(--text-secondary); }
   .cancel-btn { color: var(--danger); border-color: var(--danger); }
+
+  /* ── 移动端适配：mobile prop 为 true 时生效 ── */
+  .conversation.mobile .messages {
+    padding: var(--space-3);
+    gap: var(--space-2);
+  }
+  .conversation.mobile .composer {
+    padding: var(--space-2) var(--space-3);
+    /* 避开底部导航条 */
+    padding-bottom: max(env(safe-area-inset-bottom, 0px), 8px);
+  }
+  .conversation.mobile .composer input {
+    padding: var(--space-3) var(--space-4);
+    font-size: 16px; /* ≥16px 防 iOS/Android 自动缩放 */
+  }
+  .conversation.mobile .composer .btn {
+    padding: var(--space-3) var(--space-4);
+    font-size: 15px;
+    min-height: 44px; /* Apple HIG / Material 触控目标最小尺寸 */
+  }
+  .conversation.mobile .cancel-btn {
+    min-height: 44px;
+  }
+  .conversation.mobile :global(.message-bubble) {
+    font-size: 15px;
+  }
+  .conversation.mobile .summary-card {
+    font-size: 15px;
+  }
+  .conversation.mobile .error-card {
+    font-size: 14px;
+  }
 </style>
