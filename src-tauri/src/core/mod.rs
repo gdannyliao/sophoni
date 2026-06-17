@@ -8,6 +8,7 @@ pub mod diff;
 pub mod domain;
 pub mod errors;
 pub mod provider;
+pub mod server;
 pub mod storage;
 pub mod tools;
 pub mod workspace;
