@@ -93,8 +93,8 @@ fn system_prompt(
 工作方式：
 1. 不确定路径时，先 list_files 或 grep 探索。
 2. 改文件前，先用 read_file 看当前内容。
-3. 小改动优先用 edit_file（给出要替换的原文和新文本），大改动或新建文件用 write_file。
-4. edit_file 的 old_string 必须与文件内容精确匹配（含缩进和空格）。
+3. 小改动优先用 edit_file（给出要替换的原文和新文本），大改动或新建文件用 write_file。同一文件有多处改动时用 multi_edit_file 一次完成，比多次 edit_file 省轮次。
+4. edit_file/multi_edit_file 的 old_string 必须与文件内容精确匹配（含缩进和空格）。
 5. 当用户要求替换「所有」或「全部」时，用 edit_file 的 replace_all=true，一次替换所有匹配，不要分多次单独替换。
 6. 改完代码后，用 run_command 跑 cargo check 或 cargo test 验证改动是否正确。如果命令失败，读 stderr 定位问题并修正。
 7. 验收时优先用 read_acceptance_report 看 report.json，重点检查 ok 和 failureSummary；失败或信息不足时再用 read_runtime_log 查看相关日志。
@@ -494,6 +494,30 @@ fn tool_schemas(level: super::command_risk::RiskLevel, mode: super::tools::Works
             }),
         },
         AgentToolSchema {
+            name: "multi_edit_file",
+            description: "对同一文件按顺序应用多处精确替换。每处给出 old_string(精确匹配,含缩进)和 new_string。按顺序应用，任一处失败则整体不写入。适合一次改动多处的场景，比多次 edit_file 省轮次。".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "相对工作区根的文件路径" },
+                    "edits": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "old_string": { "type": "string", "description": "要替换的文本(精确匹配)" },
+                                "new_string": { "type": "string", "description": "替换成的文本" },
+                                "replace_all": { "type": "boolean", "description": "该处 old_string 出现多次时是否全部替换，默认 false" }
+                            },
+                            "required": ["old_string", "new_string"]
+                        }
+                    }
+                },
+                "required": ["path", "edits"]
+            }),
+        },
+        AgentToolSchema {
             name: "run_command",
             description: command_description(level),
             parameters: serde_json::json!({
@@ -649,10 +673,13 @@ fn tool_call_event(call: &AgentToolCall) -> AgentEvent {
         AgentToolArgs::WebSearch { query, max_results } => {
             ("web_search", query.clone(), format!("query: {query}\nmax_results: {max_results}"))
         }
-        AgentToolArgs::WebFetch { url, max_chars } => {
-            ("web_fetch", url.clone(), format!("url: {url}\nmax_chars: {max_chars}"))
-        }
-    };
+            AgentToolArgs::WebFetch { url, max_chars } => {
+                ("web_fetch", url.clone(), format!("url: {url}\nmax_chars: {max_chars}"))
+            }
+            AgentToolArgs::MultiEditFile { path, edits } => {
+                ("multi_edit_file", path.clone(), format!("path: {path}\nedits: {} 处", edits.len()))
+            }
+        };
     AgentEvent {
         kind: "tool_call".into(),
         title: format!("{label}: {detail}"),

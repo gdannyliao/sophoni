@@ -263,6 +263,10 @@ impl OpenAICompatibleProvider {
                 "web_fetch",
                 serde_json::json!({ "url": url, "max_chars": max_chars }),
             ),
+            AgentToolArgs::MultiEditFile { path, edits } => (
+                "multi_edit_file",
+                serde_json::json!({ "path": path, "edits": edits }),
+            ),
         };
         OpenAIToolCall {
             id: call.id.clone(),
@@ -319,6 +323,7 @@ impl OpenAICompatibleProvider {
             "run_command" => AgentToolName::RunCommand,
             "web_search" => AgentToolName::WebSearch,
             "web_fetch" => AgentToolName::WebFetch,
+            "multi_edit_file" => AgentToolName::MultiEditFile,
             other => return Err(AppError::Provider(format!("unknown tool: {other}"))),
         };
         let args: serde_json::Value = serde_json::from_str(&gtc.function.arguments)
@@ -406,6 +411,18 @@ impl OpenAICompatibleProvider {
                     .and_then(|v| v.as_u64())
                     .unwrap_or(8000) as usize;
                 AgentToolArgs::WebFetch { url, max_chars }
+            }
+            AgentToolName::MultiEditFile => {
+                let path = req_str(&args, "path", tool)?;
+                let edits_val = args
+                    .get("edits")
+                    .ok_or_else(|| AppError::Provider(format!("{tool} missing edits")))?;
+                let edits: Vec<super::domain::MultiEdit> = serde_json::from_value(edits_val.clone())
+                    .map_err(|e| AppError::Provider(format!("{tool} invalid edits: {e}")))?;
+                if edits.is_empty() {
+                    return Err(AppError::Provider(format!("{tool} edits 不能为空")));
+                }
+                AgentToolArgs::MultiEditFile { path, edits }
             }
         };
         Ok(AgentToolCall {

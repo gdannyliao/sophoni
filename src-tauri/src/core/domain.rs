@@ -159,6 +159,7 @@ pub enum AgentToolName {
     RunCommand,
     WebSearch,
     WebFetch,
+    MultiEditFile,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -199,6 +200,17 @@ pub enum AgentToolArgs {
     RunCommand { command: String },
     WebSearch { query: String, max_results: usize },
     WebFetch { url: String, max_chars: usize },
+    MultiEditFile { path: String, edits: Vec<MultiEdit> },
+}
+
+/// multi_edit_file 的单处替换项。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MultiEdit {
+    pub old_string: String,
+    pub new_string: String,
+    #[serde(default)]
+    pub replace_all: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

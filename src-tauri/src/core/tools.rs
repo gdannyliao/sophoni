@@ -10,7 +10,7 @@ use walkdir::WalkDir;
 use super::acceptance::{list_acceptance_runs, read_acceptance_report, read_runtime_log};
 use super::command_risk::{classify_command_with_level, shell_words, CommandAction, RiskLevel};
 use super::domain::{
-    AgentToolArgs, AgentToolCall, AgentToolName, AgentToolResult, ChangeKind, FileChange,
+    AgentToolArgs, AgentToolCall, AgentToolName, AgentToolResult, ChangeKind, FileChange, MultiEdit,
 };
 use super::errors::{AppError, AppResult};
 use tracing::{info, warn};
@@ -154,6 +154,10 @@ impl ToolDispatcher {
                 self.edit_file(&call.id, path, old_string, new_string, *replace_all)
                     .await
             }
+            (
+                AgentToolName::MultiEditFile,
+                AgentToolArgs::MultiEditFile { path, edits },
+            ) => self.multi_edit_file(&call.id, path, edits).await,
             (
                 AgentToolName::ReadAcceptanceReport,
                 AgentToolArgs::ReadAcceptanceReport { run_id },
@@ -456,6 +460,79 @@ impl ToolDispatcher {
         })
     }
 
+    /// 对同一文件按顺序应用多处替换。任一处失败则整体不写入（原子性）。
+    /// 复用 edit_file 的 find_actual_string + 唯一性检查逻辑。
+    async fn multi_edit_file(
+        &self,
+        call_id: &str,
+        path: &str,
+        edits: &[MultiEdit],
+    ) -> AppResult<AgentToolResult> {
+        if edits.is_empty() {
+            return Ok(tool_error(call_id, "edits 不能为空"));
+        }
+
+        let full = self.fs.root().join(path);
+        let mut content = match self.fs.read_text(&full) {
+            Ok(c) => c,
+            Err(e) => return Ok(tool_error(call_id, &format!("读取失败: {e}"))),
+        };
+
+        for (i, edit) in edits.iter().enumerate() {
+            if edit.old_string == edit.new_string {
+                return Ok(tool_error(
+                    call_id,
+                    &format!("第 {} 个 edit: old_string 和 new_string 相同", i + 1),
+                ));
+            }
+            let actual_old = match find_actual_string(&content, &edit.old_string) {
+                Some(s) => s,
+                None => {
+                    return Ok(tool_error(
+                        call_id,
+                        &format!("第 {} 个 edit: 未找到匹配的文本", i + 1),
+                    ));
+                }
+            };
+            let match_count = content.matches(actual_old.as_str()).count();
+            if match_count > 1 && !edit.replace_all {
+                return Ok(tool_error(
+                    call_id,
+                    &format!(
+                        "第 {} 个 edit: 找到 {match_count} 处匹配,请提供更多上下文使 old_string 唯一,或设 replace_all=true",
+                        i + 1
+                    ),
+                ));
+            }
+            content = if edit.replace_all {
+                content.replace(&actual_old, &edit.new_string)
+            } else {
+                content.replacen(&actual_old, &edit.new_string, 1)
+            };
+        }
+
+        let write = match self.fs.write_text_with_snapshot(&full, &content) {
+            Ok(w) => w,
+            Err(e) => return Ok(tool_error(call_id, &format!("写入失败: {e}"))),
+        };
+
+        let change = FileChange {
+            id: Uuid::new_v4(),
+            task_run_id: Uuid::new_v4(),
+            path: path.to_string(),
+            kind: ChangeKind::Modified,
+            diff: write.diff,
+            created_at: Utc::now(),
+        };
+
+        Ok(AgentToolResult {
+            tool_call_id: call_id.to_string(),
+            content: format!("已替换 {path} 中 {} 处", edits.len()),
+            is_error: false,
+            file_change: Some(change),
+        })
+    }
+
     async fn read_acceptance_report(
         &self,
         call_id: &str,
@@ -743,7 +820,7 @@ pub(crate) fn truncate_output(s: &str, max_lines: usize, max_chars: usize) -> St
 
 #[cfg(test)]
 mod tests {
-    use super::super::domain::{AgentToolArgs, AgentToolCall, AgentToolName};
+    use super::super::domain::{AgentToolArgs, AgentToolCall, AgentToolName, MultiEdit};
     use super::super::test_support::TempWorkspace;
     use super::{truncate_output, ToolDispatcher};
     use std::fs;
@@ -836,6 +913,25 @@ mod tests {
                 new_string: new.to_string(),
                 replace_all,
             },
+        }
+    }
+
+    fn multi_edit_call(path: &str, edits: Vec<MultiEdit>) -> AgentToolCall {
+        AgentToolCall {
+            id: "call-multi".to_string(),
+            name: AgentToolName::MultiEditFile,
+            arguments: AgentToolArgs::MultiEditFile {
+                path: path.to_string(),
+                edits,
+            },
+        }
+    }
+
+    fn edit(old: &str, new: &str) -> MultiEdit {
+        MultiEdit {
+            old_string: old.to_string(),
+            new_string: new.to_string(),
+            replace_all: false,
         }
     }
 
@@ -1512,6 +1608,150 @@ mod tests {
 
         assert!(!result.is_error);
         assert_eq!(written, "let x = \u{201C}world\u{201D};\n");
+    }
+
+    // ── multi_edit_file 测试 ──
+
+    #[tokio::test]
+    async fn multi_edit_file_applies_multiple_edits() {
+        let root = std::env::temp_dir().join(format!("sophoni-me-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a.txt"), "alpha\nbeta\ngamma\n").unwrap();
+
+        let tools = ToolDispatcher::new(root.clone());
+        let result = tools
+            .dispatch(&multi_edit_call(
+                "a.txt",
+                vec![edit("alpha", "ALPHA"), edit("beta", "BETA"), edit("gamma", "GAMMA")],
+            ))
+            .await
+            .unwrap();
+
+        let written = std::fs::read_to_string(root.join("a.txt")).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+
+        assert!(!result.is_error);
+        assert_eq!(written, "ALPHA\nBETA\nGAMMA\n");
+        assert!(result.content.contains("3 处"));
+    }
+
+    #[tokio::test]
+    async fn multi_edit_file_atomic_rollback() {
+        let root = std::env::temp_dir().join(format!("sophoni-me-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a.txt"), "alpha\nbeta\ngamma\n").unwrap();
+
+        let tools = ToolDispatcher::new(root.clone());
+        // 第 2 个 edit 未匹配 → 整体不写入
+        let result = tools
+            .dispatch(&multi_edit_call(
+                "a.txt",
+                vec![edit("alpha", "ALPHA"), edit("nonexistent", "X"), edit("gamma", "GAMMA")],
+            ))
+            .await
+            .unwrap();
+
+        let written = std::fs::read_to_string(root.join("a.txt")).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+
+        assert!(result.is_error);
+        assert!(result.content.contains("第 2 个 edit"));
+        // 文件未被改动（alpha 仍在）
+        assert_eq!(written, "alpha\nbeta\ngamma\n");
+    }
+
+    #[tokio::test]
+    async fn multi_edit_file_sequential_application() {
+        let root = std::env::temp_dir().join(format!("sophoni-me-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a.txt"), "start\n").unwrap();
+
+        let tools = ToolDispatcher::new(root.clone());
+        // edit[0] 的 new_string 包含 edit[1] 的 old_string，确认顺序应用
+        let result = tools
+            .dispatch(&multi_edit_call(
+                "a.txt",
+                vec![edit("start", "middle"), edit("middle", "end")],
+            ))
+            .await
+            .unwrap();
+
+        let written = std::fs::read_to_string(root.join("a.txt")).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+
+        assert!(!result.is_error);
+        assert_eq!(written, "end\n");
+    }
+
+    #[tokio::test]
+    async fn multi_edit_file_empty_edits_error() {
+        let root = std::env::temp_dir().join(format!("sophoni-me-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a.txt"), "content\n").unwrap();
+
+        let tools = ToolDispatcher::new(root.clone());
+        let result = tools
+            .dispatch(&multi_edit_call("a.txt", vec![]))
+            .await
+            .unwrap();
+
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(result.is_error);
+        assert!(result.content.contains("不能为空"));
+    }
+
+    #[tokio::test]
+    async fn multi_edit_file_replace_all_per_edit() {
+        let root = std::env::temp_dir().join(format!("sophoni-me-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a.txt"), "foo\nfoo\nbar\n").unwrap();
+
+        let tools = ToolDispatcher::new(root.clone());
+        // 第 1 个 edit replace_all=true 替换两处 foo，第 2 个 edit 替换 bar
+        let result = tools
+            .dispatch(&multi_edit_call(
+                "a.txt",
+                vec![
+                    MultiEdit {
+                        old_string: "foo".into(),
+                        new_string: "FOO".into(),
+                        replace_all: true,
+                    },
+                    edit("bar", "BAR"),
+                ],
+            ))
+            .await
+            .unwrap();
+
+        let written = std::fs::read_to_string(root.join("a.txt")).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+
+        assert!(!result.is_error);
+        assert_eq!(written, "FOO\nFOO\nBAR\n");
+    }
+
+    #[tokio::test]
+    async fn multi_edit_file_returns_single_file_change() {
+        let root = std::env::temp_dir().join(format!("sophoni-me-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a.txt"), "one\ntwo\n").unwrap();
+
+        let tools = ToolDispatcher::new(root.clone());
+        let result = tools
+            .dispatch(&multi_edit_call("a.txt", vec![edit("one", "ONE"), edit("two", "TWO")]))
+            .await
+            .unwrap();
+
+        std::fs::remove_dir_all(&root).unwrap();
+
+        assert!(!result.is_error);
+        let change = result.file_change.expect("应有 file_change");
+        assert_eq!(change.path, "a.txt");
+        // 单个 diff 同时含两处改动
+        assert!(change.diff.contains("-one"));
+        assert!(change.diff.contains("+ONE"));
+        assert!(change.diff.contains("-two"));
+        assert!(change.diff.contains("+TWO"));
     }
 
     #[tokio::test]
