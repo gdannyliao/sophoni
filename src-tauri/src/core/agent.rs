@@ -767,7 +767,23 @@ mod tests {
         vec![]
     }
 
-    
+    #[test]
+    fn verify_tool_schemas_include_web_tools() {
+        use super::super::command_risk::RiskLevel;
+        use super::super::tools::WorkspaceMode;
+        let full = super::tool_schemas(RiskLevel::Standard, WorkspaceMode::Full);
+        let names: Vec<&str> = full.iter().map(|s| s.name).collect();
+        println!("Full mode tools: {names:?}");
+        assert!(names.contains(&"web_search"), "web_search 应在 Full 模式可用");
+        assert!(names.contains(&"web_fetch"), "web_fetch 应在 Full 模式可用");
+
+        let chat = super::tool_schemas(RiskLevel::Standard, WorkspaceMode::ChatOnly);
+        let chat_names: Vec<&str> = chat.iter().map(|s| s.name).collect();
+        println!("ChatOnly mode tools: {chat_names:?}");
+        assert!(chat_names.contains(&"web_search"), "web_search 应在 ChatOnly 模式可用");
+        assert!(chat_names.contains(&"web_fetch"), "web_fetch 应在 ChatOnly 模式可用");
+    }
+
     #[test]
     fn strip_think_tags_removes_think_block() {
         let input = "<think>用户在问文件列表</think>\n工作区只有一个文件 abc.txt";
