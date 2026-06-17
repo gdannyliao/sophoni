@@ -191,7 +191,9 @@
     display: flex;
     align-items: center;
     gap: var(--space-2);
-    padding: var(--space-2) var(--space-3);
+    /* padding-top 用 safe-area-inset-top 避开 Android 状态栏 / iOS 刘海。 */
+    /* max(env(), 28px)：env 在部分 Android 返回 0，28px 覆盖典型状态栏高度 */
+    padding: max(env(safe-area-inset-top, 0px), 28px) var(--space-3) var(--space-2);
     background: var(--bg-secondary);
     border-bottom: 1px solid var(--border);
   }

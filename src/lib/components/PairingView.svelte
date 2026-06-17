@@ -106,7 +106,9 @@
     align-items: center;
     justify-content: center;
     min-height: 100vh;
-    padding: var(--space-6);
+    /* 避开状态栏（env 在 Android 可能返回 0，28px 兜底） */
+    padding: max(env(safe-area-inset-top, 0px), 28px) var(--space-6) var(--space-6);
+    box-sizing: border-box;
   }
   .logo {
     font-size: 42px;
