@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { scan, requestPermissions, Format } from "@tauri-apps/plugin-barcode-scanner";
   import { pair } from "../mobile/mobile-api";
   import { parsePairUrl, saveConnection } from "../mobile/connection";
 
@@ -8,6 +9,42 @@
   let code = "";
   let error = "";
   let pairing = false;
+  let scanning = false;
+
+  /** 调用原生摄像头扫码。扫到 sophoni://pair?... 后自动解析填入地址和配对码。 */
+  async function handleScan() {
+    error = "";
+    scanning = true;
+    try {
+      // 首次扫码需先请求相机权限
+      const perm = await requestPermissions();
+      if (perm !== "granted") {
+        error = "需要相机权限才能扫码";
+        return;
+      }
+      const result = await scan({ formats: [Format.QRCode] });
+      if (!result?.content) {
+        return; // 用户取消
+      }
+      const parsed = parsePairUrl(result.content);
+      if (!parsed) {
+        error = "扫到的不是有效的 Sophoni 配对二维码";
+        return;
+      }
+      // 扫码成功，自动填入并直接配对
+      baseUrl = parsed.baseUrl;
+      code = parsed.code;
+      await handlePair();
+    } catch (e) {
+      // scan 被取消会 reject，忽略这类错误
+      const msg = e instanceof Error ? e.message : String(e);
+      if (!msg.toLowerCase().includes("cancel")) {
+        error = msg;
+      }
+    } finally {
+      scanning = false;
+    }
+  }
 
   async function handlePair() {
     error = "";
@@ -55,6 +92,16 @@
   <p class="subtitle">
     在桌面端打开「手机连接」面板，查看 IP 地址和配对码。
   </p>
+
+  {#if !scanning}
+    <button class="btn btn-scan" data-testid="scan-btn" on:click={handleScan}>
+      📷 扫码连接
+    </button>
+  {:else}
+    <button class="btn btn-scan" disabled>扫码中...</button>
+  {/if}
+
+  <div class="divider"><span>或手动输入</span></div>
 
   <form class="pair-form" on:submit|preventDefault={handlePair}>
     <label>
@@ -166,6 +213,40 @@
     width: 100%;
     padding: var(--space-3);
     font-size: 15px;
+  }
+  .btn-scan {
+    width: 100%;
+    max-width: 320px;
+    padding: var(--space-4);
+    font-size: 16px;
+    background: var(--accent-bg, #4a9eff);
+    color: white;
+    border: 0;
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    min-height: 48px;
+  }
+  .btn-scan:disabled {
+    opacity: 0.6;
+  }
+  .divider {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    max-width: 320px;
+    margin: var(--space-3) 0;
+    color: var(--text-secondary);
+    font-size: 12px;
+  }
+  .divider::before,
+  .divider::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+  .divider span {
+    padding: 0 var(--space-3);
   }
   .hint {
     font-size: 11px;

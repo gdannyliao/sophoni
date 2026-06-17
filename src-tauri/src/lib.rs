@@ -5,9 +5,14 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use core::agent::{run_agent_task as run_agent_task_inner, run_mock_agent_task, AgentTaskResult, EventSink};
+use core::agent::{
+    run_agent_task as run_agent_task_inner, run_mock_agent_task, AgentTaskResult, EventSink,
+};
 use core::command_risk::{classify_command, CommandRisk, RiskLevel};
-use core::domain::{AgentConfig, AgentEvent, ConfigStatus, Conversation, ConversationSummary, ConversationTurn, SystemPrompt};
+use core::domain::{
+    AgentConfig, AgentEvent, ConfigStatus, Conversation, ConversationSummary, ConversationTurn,
+    SystemPrompt,
+};
 use core::errors::AppError;
 use core::provider::OpenAICompatibleProvider;
 use core::storage::Storage;
@@ -77,10 +82,7 @@ fn classify_command_risk(command: String, workspace_root: String) -> CommandRisk
 }
 
 #[tauri::command]
-fn run_mock_task(
-    workspace_root: String,
-    prompt: String,
-) -> Result<AgentTaskResult, AppError> {
+fn run_mock_task(workspace_root: String, prompt: String) -> Result<AgentTaskResult, AppError> {
     run_mock_agent_task(PathBuf::from(workspace_root), &prompt)
 }
 
@@ -142,7 +144,16 @@ fn resolve_conversation(
     storage: &Storage,
     workspace_id: &uuid::Uuid,
     existing_conversation_id: Option<&str>,
-) -> Result<(Conversation, bool, Vec<ConversationTurn>, String, Vec<String>), AppError> {
+) -> Result<
+    (
+        Conversation,
+        bool,
+        Vec<ConversationTurn>,
+        String,
+        Vec<String>,
+    ),
+    AppError,
+> {
     // 复用分支：existing_conversation_id 合法且会话存在
     if let Some(id_str) = existing_conversation_id {
         if let Ok(id) = uuid::Uuid::parse_str(id_str) {
@@ -158,7 +169,13 @@ fn resolve_conversation(
                     .collect::<std::collections::HashSet<_>>()
                     .into_iter()
                     .collect();
-                return Ok((conv, false, history_turns, memory_context, existing_categories));
+                return Ok((
+                    conv,
+                    false,
+                    history_turns,
+                    memory_context,
+                    existing_categories,
+                ));
             }
         }
     }
@@ -192,7 +209,10 @@ pub(crate) async fn run_agent_task_core(
     let risk_level = config.risk_level;
     let (workspace, workspace_mode) = match &config.workspace_path {
         Some(path) => (path.clone(), core::tools::WorkspaceMode::Full),
-        None => ("/tmp/sophoni-chat".to_string(), core::tools::WorkspaceMode::ChatOnly),
+        None => (
+            "/tmp/sophoni-chat".to_string(),
+            core::tools::WorkspaceMode::ChatOnly,
+        ),
     };
     let provider = OpenAICompatibleProvider::new(config);
 
@@ -278,7 +298,14 @@ async fn run_agent_task(
         pending: state.confirm_pending.clone(),
     }) as Arc<dyn ConfirmHandler>;
     let sink = Arc::new(AppEventSink { app }) as Arc<dyn EventSink>;
-    run_agent_task_core(prompt, existing_conversation_id, state.cancel.clone(), confirm_handler, sink).await
+    run_agent_task_core(
+        prompt,
+        existing_conversation_id,
+        state.cancel.clone(),
+        confirm_handler,
+        sink,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -300,19 +327,16 @@ async fn get_conversation(
     id: String,
 ) -> Result<Conversation, AppError> {
     let storage = state.storage.lock().await;
-    let uuid = uuid::Uuid::parse_str(&id)
-        .map_err(|e| AppError::Config(format!("无效会话 ID: {e}")))?;
+    let uuid =
+        uuid::Uuid::parse_str(&id).map_err(|e| AppError::Config(format!("无效会话 ID: {e}")))?;
     Ok(storage.get_conversation(&uuid)?)
 }
 
 #[tauri::command]
-async fn delete_conversation(
-    state: State<'_, AppState>,
-    id: String,
-) -> Result<(), AppError> {
+async fn delete_conversation(state: State<'_, AppState>, id: String) -> Result<(), AppError> {
     let storage = state.storage.lock().await;
-    let uuid = uuid::Uuid::parse_str(&id)
-        .map_err(|e| AppError::Config(format!("无效会话 ID: {e}")))?;
+    let uuid =
+        uuid::Uuid::parse_str(&id).map_err(|e| AppError::Config(format!("无效会话 ID: {e}")))?;
     storage.delete_conversation(&uuid)?;
     Ok(())
 }
@@ -341,7 +365,13 @@ async fn get_pair_qrcode(state: State<'_, AppState>) -> Result<PairQrCode, AppEr
     let code = state.server_state.current_pair_code().await;
     let url = core::server::qrcode::build_pair_url(&ip, port, &code);
     let svg = core::server::qrcode::render_qr_svg(&url);
-    Ok(PairQrCode { url, svg, ip, port, code })
+    Ok(PairQrCode {
+        url,
+        svg,
+        ip,
+        port,
+        code,
+    })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -428,9 +458,7 @@ fn run_mobile() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![
-            get_app_status,
-        ])
+        .invoke_handler(tauri::generate_handler![get_app_status,])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
