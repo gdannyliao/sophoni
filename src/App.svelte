@@ -64,15 +64,16 @@
       return c !== p && c.startsWith(p + "/");
     };
 
-    // 按路径长度从长到短排序：子目录在前，父目录在后
+    // 按路径长度从短到长排序：父目录先入集合，子目录后处理时才能找到父归并。
     const sorted = [...raw].sort(
-      (a, b) => norm(b.path).length - norm(a.path).length,
+      (a, b) => norm(a.path).length - norm(b.path).length,
     );
 
     const merged = new Map<string, WorkspaceGroup>();
     for (const g of sorted) {
-      // 找最短的父路径工作区（已在上游处理过的），归并过去
-      const parentKey = [...merged.keys()].find((k) => isSubdir(g.path, k));
+      // 找已入集合的最长父路径工作区，归并过去（多级嵌套时归到最近父）
+      const parentCandidates = [...merged.keys()].filter((k) => isSubdir(g.path, k));
+      const parentKey = parentCandidates.sort((a, b) => b.length - a.length)[0];
       if (parentKey !== undefined) {
         const parent = merged.get(parentKey)!;
         parent.conversations = [...parent.conversations, ...g.conversations].sort(
