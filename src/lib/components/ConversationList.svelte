@@ -28,11 +28,6 @@
     <button class="btn-icon" on:click={onDisconnect} aria-label="断开连接">断开</button>
   </header>
 
-  <!-- 新对话按钮 -->
-  <button class="btn-new" data-testid="new-conv-btn" on:click={onNew}>
-    <span class="plus">＋</span> 新对话
-  </button>
-
   <!-- 会话列表 -->
   <div class="conv-items">
     {#if conversations.length === 0}
@@ -54,6 +49,13 @@
         </button>
       {/each}
     {/if}
+  </div>
+
+  <!-- 底部新对话栏（固定在底部，避开导航条） -->
+  <div class="bottom-bar">
+    <button class="btn-new" data-testid="new-conv-btn" on:click={onNew}>
+      <span class="plus">＋</span> 新对话
+    </button>
   </div>
 </div>
 
@@ -92,8 +94,8 @@
     align-items: center;
     justify-content: center;
     gap: var(--space-2);
-    margin: var(--space-3) var(--space-4);
     padding: var(--space-3);
+    width: 100%;
     background: var(--accent-bg, #4a9eff);
     color: white;
     border: 0;
@@ -148,5 +150,10 @@
   .conv-time {
     font-size: 12px;
     color: var(--text-secondary);
+  }
+  .bottom-bar {
+    padding: var(--space-3) var(--space-4) max(env(safe-area-inset-bottom, 0px), 12px);
+    border-top: 1px solid var(--border);
+    background: var(--bg-secondary);
   }
 </style>

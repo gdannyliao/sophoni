@@ -1,5 +1,6 @@
 <script lang="ts">
   import { marked } from "marked";
+  import { tick } from "svelte";
   import type { AgentEvent } from "../types";
   import MessageBubble from "./MessageBubble.svelte";
   import ThoughtLine from "./ThoughtLine.svelte";
@@ -167,9 +168,15 @@
   }
 
   // token 到达或事件变化时，自动滚到底部，保证流式输出始终可见。
-  // streamingText 经 App.svelte 的 rAF 节流后每帧最多变一次，滚动开销可控。
   $: if (streamingText && messagesEl) {
     messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+  // events 变化时（加载历史会话/新消息到达）也滚到底部。
+  // 用 tick 确保 DOM 已渲染最新 events 再滚，否则 scrollHeight 还是旧的。
+  $: if (events.length > 0) scrollToBottom();
+  async function scrollToBottom() {
+    await tick();
+    if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 </script>
 
