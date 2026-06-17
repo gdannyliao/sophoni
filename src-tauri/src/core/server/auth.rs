@@ -1,5 +1,5 @@
 use axum::{
-    extract::Request,
+    extract::{Request, State},
     http::StatusCode,
     middleware::Next,
     response::Response,
@@ -8,8 +8,12 @@ use axum::{
 use super::state::ServerState;
 
 /// Bearer token 校验中间件。从 Authorization 头取 token，校验不过返回 401。
-/// 应用于除 /pair 外的所有路由。
-pub async fn require_token(state: ServerState, req: Request, next: Next) -> Result<Response, StatusCode> {
+/// 应用于除 /pair 外的所有路由。state 通过 axum State extractor 注入。
+pub async fn require_token(
+    State(state): State<ServerState>,
+    req: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
     let token = req
         .headers()
         .get("Authorization")
