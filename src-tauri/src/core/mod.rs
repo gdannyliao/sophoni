@@ -10,6 +10,7 @@ pub mod errors;
 pub mod provider;
 pub mod storage;
 pub mod tools;
+pub mod web;
 pub mod workspace;
 
 #[cfg(test)]
