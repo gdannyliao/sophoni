@@ -50,7 +50,6 @@
   async function clearWorkspace() {
     await setWorkspacePath("");
     workspacePath = null;
-    conversations = [];
   }
 
   // token 节流：后端已按 30ms 窗口合并，但 IPC 回调仍可能密集到达。前端用 rAF 把
