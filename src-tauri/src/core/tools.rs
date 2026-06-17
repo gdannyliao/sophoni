@@ -53,6 +53,8 @@ pub struct ToolDispatcher {
     risk_level: RiskLevel,
     confirm_handler: Option<Arc<dyn ConfirmHandler>>,
     workspace_mode: WorkspaceMode,
+    search_config: Option<super::web::SearchConfig>,
+    http_client: reqwest::Client,
 }
 
 impl ToolDispatcher {
@@ -62,6 +64,11 @@ impl ToolDispatcher {
             risk_level: RiskLevel::Standard,
             confirm_handler: None,
             workspace_mode: WorkspaceMode::default(),
+            search_config: None,
+            http_client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .expect("failed to build http client"),
         }
     }
 
@@ -80,6 +87,11 @@ impl ToolDispatcher {
         self
     }
 
+    pub fn with_search_config(mut self, config: super::web::SearchConfig) -> Self {
+        self.search_config = Some(config);
+        self
+    }
+
     pub fn risk_level(&self) -> RiskLevel {
         self.risk_level
     }
@@ -90,6 +102,16 @@ impl ToolDispatcher {
 
     pub async fn dispatch(&self, call: &AgentToolCall) -> AppResult<AgentToolResult> {
         info!(tool = ?call.name, "dispatch");
+        // 网络工具不受 ChatOnly 拦截（纯对话模式也能查网络）
+        match (&call.name, &call.arguments) {
+            (AgentToolName::WebSearch, AgentToolArgs::WebSearch { query, max_results }) => {
+                return self.web_search(&call.id, query, *max_results).await;
+            }
+            (AgentToolName::WebFetch, AgentToolArgs::WebFetch { url, max_chars }) => {
+                return self.web_fetch(&call.id, url, *max_chars).await;
+            }
+            _ => {}
+        }
         if self.workspace_mode == WorkspaceMode::ChatOnly {
             warn!(tool = ?call.name, "dispatch blocked: ChatOnly mode");
             return Ok(AgentToolResult {
@@ -558,6 +580,58 @@ impl ToolDispatcher {
             }
             Ok(Err(e)) => Ok(tool_error(call_id, &format!("执行失败: {e}"))),
             Err(_) => Ok(tool_error(call_id, "命令超时(30s),已被终止")),
+        }
+    }
+
+    async fn web_search(
+        &self,
+        call_id: &str,
+        query: &str,
+        max_results: usize,
+    ) -> AppResult<AgentToolResult> {
+        let config = match &self.search_config {
+            Some(c) => c,
+            None => {
+                return Ok(tool_error(
+                    call_id,
+                    "未配置搜索 API，请在设置里配置 Tavily 或 Google CSE key",
+                ));
+            }
+        };
+        let backend = match super::web::select_backend(config) {
+            Some(b) => b,
+            None => {
+                return Ok(tool_error(
+                    call_id,
+                    "搜索后端配置不完整（Tavily 需要 tavily_key；Google 需要 google_key + google_cx）",
+                ));
+            }
+        };
+        match backend.search(&self.http_client, query, max_results).await {
+            Ok(results) => Ok(AgentToolResult {
+                tool_call_id: call_id.to_string(),
+                content: super::web::format_results(&results),
+                is_error: false,
+                file_change: None,
+            }),
+            Err(e) => Ok(tool_error(call_id, &format!("搜索失败: {e}"))),
+        }
+    }
+
+    async fn web_fetch(
+        &self,
+        call_id: &str,
+        url: &str,
+        max_chars: usize,
+    ) -> AppResult<AgentToolResult> {
+        match super::web::web_fetch(&self.http_client, url, max_chars).await {
+            Ok(content) => Ok(AgentToolResult {
+                tool_call_id: call_id.to_string(),
+                content,
+                is_error: false,
+                file_change: None,
+            }),
+            Err(e) => Ok(tool_error(call_id, &e.to_string())),
         }
     }
 }

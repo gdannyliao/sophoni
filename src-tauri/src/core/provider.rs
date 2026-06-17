@@ -255,6 +255,14 @@ impl OpenAICompatibleProvider {
                 "run_command",
                 serde_json::json!({ "command": command }),
             ),
+            AgentToolArgs::WebSearch { query, max_results } => (
+                "web_search",
+                serde_json::json!({ "query": query, "max_results": max_results }),
+            ),
+            AgentToolArgs::WebFetch { url, max_chars } => (
+                "web_fetch",
+                serde_json::json!({ "url": url, "max_chars": max_chars }),
+            ),
         };
         OpenAIToolCall {
             id: call.id.clone(),
@@ -309,6 +317,8 @@ impl OpenAICompatibleProvider {
             "read_runtime_log" => AgentToolName::ReadRuntimeLog,
             "list_acceptance_runs" => AgentToolName::ListAcceptanceRuns,
             "run_command" => AgentToolName::RunCommand,
+            "web_search" => AgentToolName::WebSearch,
+            "web_fetch" => AgentToolName::WebFetch,
             other => return Err(AppError::Provider(format!("unknown tool: {other}"))),
         };
         let args: serde_json::Value = serde_json::from_str(&gtc.function.arguments)
@@ -380,6 +390,22 @@ impl OpenAICompatibleProvider {
             AgentToolName::RunCommand => {
                 let command = req_str(&args, "command", tool)?;
                 AgentToolArgs::RunCommand { command }
+            }
+            AgentToolName::WebSearch => {
+                let query = req_str(&args, "query", tool)?;
+                let max_results = args
+                    .get("max_results")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(5) as usize;
+                AgentToolArgs::WebSearch { query, max_results }
+            }
+            AgentToolName::WebFetch => {
+                let url = req_str(&args, "url", tool)?;
+                let max_chars = args
+                    .get("max_chars")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(8000) as usize;
+                AgentToolArgs::WebFetch { url, max_chars }
             }
         };
         Ok(AgentToolCall {

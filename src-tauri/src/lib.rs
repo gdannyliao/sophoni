@@ -185,6 +185,7 @@ async fn run_agent_task(
 
     let (config, _provider) = AgentConfig::load()?;
     let risk_level = config.risk_level;
+    let search_config = config.search_config.clone();
     let (workspace, workspace_mode) = match &config.workspace_path {
         Some(path) => (path.clone(), core::tools::WorkspaceMode::Full),
         None => ("/tmp/sophoni-chat".to_string(), core::tools::WorkspaceMode::ChatOnly),
@@ -199,6 +200,10 @@ async fn run_agent_task(
         .with_risk_level(risk_level)
         .with_confirm_handler(confirm_handler)
         .with_workspace_mode(workspace_mode);
+    let mut tools = tools;
+    if let Some(sc) = search_config {
+        tools = tools.with_search_config(sc);
+    }
     let sink = AppEventSink { app };
 
     // 在 async 外创建/复用 conversation + 读历史 turns 与记忆（Storage/Connection 不是 Send，不能跨 await）

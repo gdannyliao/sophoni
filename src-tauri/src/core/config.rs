@@ -108,6 +108,7 @@ fn try_parse_multi_provider(content: &str) -> AppResult<Option<(AgentConfig, Str
     }
 
     let defaults = provider_defaults(&active);
+    let search_config = parse_search_config(content);
     Ok(Some((
         AgentConfig {
             api_key: entry.api_key,
@@ -115,6 +116,7 @@ fn try_parse_multi_provider(content: &str) -> AppResult<Option<(AgentConfig, Str
             base_url: entry.base_url.unwrap_or(defaults.base_url),
             risk_level: parse_risk_level(&content),
             workspace_path: parse_workspace_path(&content),
+            search_config,
         },
         active,
     )))
@@ -147,6 +149,7 @@ fn try_parse_legacy(content: &str) -> AppResult<AgentConfig> {
             .unwrap_or_else(|| "https://open.bigmodel.cn/api/paas/v4".to_string()),
         risk_level: parse_risk_level(content),
         workspace_path: parse_workspace_path(content),
+        search_config: parse_search_config(content),
     })
 }
 
@@ -162,6 +165,22 @@ fn parse_workspace_path(content: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// 从 TOML 内容解析 [search] 段。段缺失或字段全空时返回 None。
+fn parse_search_config(content: &str) -> Option<super::web::SearchConfig> {
+    #[derive(serde::Deserialize)]
+    struct ConfigFile {
+        #[serde(default)]
+        search: Option<super::web::SearchConfig>,
+    }
+    let parsed: ConfigFile = toml::from_str(content).ok()?;
+    let cfg = parsed.search?;
+    if cfg.has_backend() {
+        Some(cfg)
+    } else {
+        None
+    }
 }
 
 pub fn save_workspace_path(path: &str) -> AppResult<()> {

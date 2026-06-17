@@ -51,7 +51,7 @@ fn system_prompt(
     use super::command_risk::RiskLevel;
 
     if mode == super::tools::WorkspaceMode::ChatOnly {
-        return "你是桌面工作区 Agent。当前为纯对话模式（未选择工作区），文件操作和命令执行不可用。你可以回答问题、生成代码片段、解释概念。如果用户需要文件操作，提示选择工作区。".to_string();
+        return "你是桌面工作区 Agent。当前为纯对话模式（未选择工作区），文件操作和命令执行不可用。你可以回答问题、生成代码片段、解释概念。遇到不确定的问题时，可以用 web_search 搜索网络、用 web_fetch 读取网页详情。如果用户需要文件操作，提示选择工作区。".to_string();
     }
     let category_rule = if existing_categories.is_empty() {
         "
@@ -87,6 +87,8 @@ fn system_prompt(
 - list_acceptance_runs：列出最近验收运行 ID。
 - read_acceptance_report：读取验收报告 report.json，可不传 run_id 读取最新一次。
 - read_runtime_log：读取验收运行日志的尾部内容，可不传 run_id 读取最新一次。
+- web_search：搜索网络。遇到未知报错、陌生 API、不确定的用法时，先搜索而不是猜。
+- web_fetch：读取网页内容。web_search 找到线索后，用它读取详情。
 
 工作方式：
 1. 不确定路径时，先 list_files 或 grep 探索。
@@ -399,10 +401,37 @@ fn emit_round_timing(
 }
 
 fn tool_schemas(level: super::command_risk::RiskLevel, mode: super::tools::WorkspaceMode) -> Vec<AgentToolSchema> {
+    // 网络工具在所有模式都可用（含 ChatOnly）
+    let web_schemas: Vec<AgentToolSchema> = vec![
+        AgentToolSchema {
+            name: "web_search",
+            description: "搜索网络获取外部信息。遇到未知报错、陌生 API、版本兼容性问题时使用。返回标题、摘要和 URL 列表。".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "搜索关键词" },
+                    "max_results": { "type": "integer", "minimum": 1, "maximum": 10, "description": "返回条数，默认 5" }
+                },
+                "required": ["query"]
+            }),
+        },
+        AgentToolSchema {
+            name: "web_fetch",
+            description: "抓取指定 URL 的网页内容并转为文本。用于读取 web_search 找到的页面详情（文档、Stack Overflow 答案、GitHub issue 等）。".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "url": { "type": "string", "description": "要抓取的完整 URL（http/https）" },
+                    "max_chars": { "type": "integer", "minimum": 500, "maximum": 50000, "description": "返回的最大字符数，默认 8000" }
+                },
+                "required": ["url"]
+            }),
+        },
+    ];
     if mode == super::tools::WorkspaceMode::ChatOnly {
-        return vec![];
+        return web_schemas;
     }
-    vec![
+    let mut schemas = vec![
         AgentToolSchema {
             name: "read_file",
             description: "读取工作区内指定文件的文本内容。路径相对于工作区根目录。".into(),
@@ -508,7 +537,9 @@ fn tool_schemas(level: super::command_risk::RiskLevel, mode: super::tools::Works
                 }
             }),
         },
-    ]
+    ];
+    schemas.extend(web_schemas);
+    schemas
 }
 
 fn error_event(body: &str) -> AgentEvent {
@@ -614,6 +645,12 @@ fn tool_call_event(call: &AgentToolCall) -> AgentEvent {
         ),
         AgentToolArgs::RunCommand { command } => {
             ("run_command", command.clone(), format!("command: {command}"))
+        }
+        AgentToolArgs::WebSearch { query, max_results } => {
+            ("web_search", query.clone(), format!("query: {query}\nmax_results: {max_results}"))
+        }
+        AgentToolArgs::WebFetch { url, max_chars } => {
+            ("web_fetch", url.clone(), format!("url: {url}\nmax_chars: {max_chars}"))
         }
     };
     AgentEvent {
