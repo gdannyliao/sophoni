@@ -47,6 +47,12 @@
     }
   }
 
+  async function clearWorkspace() {
+    await setWorkspacePath("");
+    workspacePath = null;
+    conversations = [];
+  }
+
   // token 节流：后端已按 30ms 窗口合并，但 IPC 回调仍可能密集到达。前端用 rAF 把
   // 多次 token 累积到一帧内只触发一次 streamingText 赋值（=一次重渲染），彻底避免
   // 高频 token 卡死主线程。pendingBuffer 在帧间累积，rafScheduled 防止重复调度。
@@ -194,6 +200,7 @@
         onStart={runDemo}
         onSelectConversation={selectConversation}
         onSelectWorkspace={selectWorkspace}
+        onClearWorkspace={clearWorkspace}
       />
     {:else}
       <Conversation

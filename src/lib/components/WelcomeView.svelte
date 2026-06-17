@@ -6,6 +6,7 @@
   export let onStart: (prompt: string) => void = () => {};
   export let onSelectConversation: (id: string) => void = () => {};
   export let onSelectWorkspace: () => void = () => {};
+  export let onClearWorkspace: () => void = () => {};
 
   let prompt = "";
 
@@ -60,9 +61,14 @@
           <div class="ws-hint">选择工作区以启用文件读写和命令执行</div>
         {/if}
       </div>
-      <button class="btn ws-select-btn" data-testid="welcome-select-workspace" on:click={onSelectWorkspace}>
-        {workspacePath ? "切换" : "选择"}
-      </button>
+      <div class="ws-actions">
+        <button class="btn ws-select-btn" data-testid="welcome-select-workspace" on:click={onSelectWorkspace}>
+          {workspacePath ? "切换" : "选择"}
+        </button>
+        {#if workspacePath}
+          <button class="btn ws-clear-btn" data-testid="welcome-clear-workspace" on:click={onClearWorkspace}>清除</button>
+        {/if}
+      </div>
     </div>
 
     {#if workspacePath && conversations.length > 0}
@@ -173,7 +179,9 @@
     white-space: nowrap;
   }
   .ws-hint { font-size: 11px; color: var(--accent); }
+  .ws-actions { display: flex; gap: var(--space-1); flex-shrink: 0; }
   .ws-select-btn { font-size: 12px; }
+  .ws-clear-btn { font-size: 12px; color: var(--danger); border-color: var(--danger); }
   .recent-section {
     width: 100%;
     margin-top: var(--space-4);
