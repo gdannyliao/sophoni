@@ -157,6 +157,8 @@ pub enum AgentToolName {
     ReadRuntimeLog,
     ListAcceptanceRuns,
     RunCommand,
+    WebSearch,
+    WebFetch,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -195,6 +197,8 @@ pub enum AgentToolArgs {
         limit: usize,
     },
     RunCommand { command: String },
+    WebSearch { query: String, max_results: usize },
+    WebFetch { url: String, max_chars: usize },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -232,6 +236,7 @@ pub struct AgentConfig {
     pub base_url: String,
     pub risk_level: super::command_risk::RiskLevel,
     pub workspace_path: Option<String>,
+    pub search_config: Option<super::web::SearchConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
