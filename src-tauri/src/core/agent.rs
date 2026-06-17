@@ -8,12 +8,12 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use super::domain::{
-    AgentEvent, AgentToolArgs, AgentToolCall, AgentToolResult, AgentToolSchema, ChangeKind,
+    AgentEvent, AgentToolCall, AgentToolResult, AgentToolSchema, ChangeKind,
     ConversationTurn, FileChange, ProviderResponse, SystemPrompt,
 };
 use super::errors::AppResult;
 use super::provider::AgentProvider;
-use super::tools::ToolDispatcher;
+use super::tool_spec::{self, ToolRegistry};
 use super::workspace::WorkspaceFs;
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -28,7 +28,7 @@ pub struct AgentTaskResult {
 
 const MAX_ROUNDS: usize = 12;
 
-fn command_description(level: super::command_risk::RiskLevel) -> String {
+pub(crate) fn command_description(level: super::command_risk::RiskLevel) -> String {
     use super::command_risk::RiskLevel;
     match level {
         RiskLevel::Standard => {
@@ -188,7 +188,9 @@ pub trait EventSink: Send + Sync {
 
 pub async fn run_agent_task(
     mut provider: Box<dyn AgentProvider>,
-    tools: &ToolDispatcher,
+    registry: &ToolRegistry,
+    risk_level: super::command_risk::RiskLevel,
+    mode: super::tools::WorkspaceMode,
     sink: &dyn EventSink,
     cancel: &AtomicBool,
     _system: SystemPrompt,
@@ -201,7 +203,7 @@ pub async fn run_agent_task(
 ) -> AppResult<AgentTaskResult> {
     let task_start = Instant::now();
     info!(prompt = %user_task, "agent task started");
-    let system = SystemPrompt(system_prompt(tools.risk_level(), tools.workspace_mode(), &existing_categories));
+    let system = SystemPrompt(system_prompt(risk_level, mode, &existing_categories));
     // 续聊：先继承历史 turns，模型能看到同会话之前的完整对话。
     // 新会话时 history_turns 为空，等价于从零开始。
     let mut turns: Vec<ConversationTurn> = history_turns;
@@ -214,7 +216,7 @@ pub async fn run_agent_task(
     turns.push(ConversationTurn::User { content: user_task.clone() });
     let mut events: Vec<AgentEvent> = vec![];
     let mut file_changes: Vec<FileChange> = vec![];
-    let schemas = tool_schemas(tools.risk_level(), tools.workspace_mode());
+    let schemas = tool_spec::tool_schemas(registry, mode);
     let deadline = Instant::now() + OVERALL_TIMEOUT;
 
     // emit conversation_created 让前端立即更新 Sidebar（复用会话时前端靠 id 去重）
@@ -335,8 +337,8 @@ pub async fn run_agent_task(
         });
 
         for call in calls {
-            push(&mut events, sink, tool_call_event(&call));
-            let result = tools.dispatch(&call).await;
+            push(&mut events, sink, tool_call_event(registry, &call));
+            let result = tool_spec::dispatch(registry, mode, &call).await;
             let result = match result {
                 Ok(r) => r,
                 Err(e) => tool_error_result(&call.id, &e.to_string()),
@@ -401,182 +403,6 @@ fn emit_round_timing(
     );
 }
 
-fn tool_schemas(level: super::command_risk::RiskLevel, mode: super::tools::WorkspaceMode) -> Vec<AgentToolSchema> {
-    // 网络工具在所有模式都可用（含 ChatOnly）
-    let web_schemas: Vec<AgentToolSchema> = vec![
-        AgentToolSchema {
-            name: "web_search",
-            description: "搜索网络获取外部信息。遇到未知报错、陌生 API、版本兼容性问题时使用。返回标题、摘要和 URL 列表。".into(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "query": { "type": "string", "description": "搜索关键词" },
-                    "max_results": { "type": "integer", "minimum": 1, "maximum": 10, "description": "返回条数，默认 5" }
-                },
-                "required": ["query"]
-            }),
-        },
-        AgentToolSchema {
-            name: "web_fetch",
-            description: "抓取指定 URL 的网页内容并转为文本。用于读取 web_search 找到的页面详情（文档、Stack Overflow 答案、GitHub issue 等）。".into(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "url": { "type": "string", "description": "要抓取的完整 URL（http/https）" },
-                    "max_chars": { "type": "integer", "minimum": 500, "maximum": 50000, "description": "返回的最大字符数，默认 8000" }
-                },
-                "required": ["url"]
-            }),
-        },
-    ];
-    if mode == super::tools::WorkspaceMode::ChatOnly {
-        return web_schemas;
-    }
-    let mut schemas = vec![
-        AgentToolSchema {
-            name: "read_file",
-            description: "读取工作区内指定文件的文本内容。路径相对于工作区根目录。".into(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string", "description": "相对工作区根的文件路径" }
-                },
-                "required": ["path"]
-            }),
-        },
-        AgentToolSchema {
-            name: "write_file",
-            description: "向工作区内指定文件写入文本内容(覆盖)。路径相对于工作区根目录。".into(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string", "description": "相对工作区根的文件路径" },
-                    "content": { "type": "string", "description": "要写入的完整文件内容" }
-                },
-                "required": ["path", "content"]
-            }),
-        },
-        AgentToolSchema {
-            name: "list_files",
-            description: "列出工作区内指定目录的文件和子目录。默认只列直接子项（不递归）。".into(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string", "description": "相对工作区根的目录路径，默认为工作区根" },
-                    "recursive": { "type": "boolean", "description": "是否递归列出子目录，默认 false" }
-                }
-            }),
-        },
-        AgentToolSchema {
-            name: "grep",
-            description: "在工作区内搜索匹配正则表达式的文件内容。返回 path:line:content 格式的结果。".into(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "pattern": { "type": "string", "description": "正则表达式" },
-                    "path": { "type": "string", "description": "限定搜索的目录或文件，默认整个工作区" },
-                    "include": { "type": "string", "description": "文件名 glob 过滤，如 *.ts" }
-                },
-                "required": ["pattern"]
-            }),
-        },
-        AgentToolSchema {
-            name: "edit_file",
-            description: "对已有文件做精确文本替换(search-replace)。先 read_file 看准内容,再给出 old_string(必须与文件内容精确匹配,含缩进)和 new_string。old_string 必须在文件中唯一,除非 replace_all=true。".into(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string", "description": "相对工作区根的文件路径" },
-                    "old_string": { "type": "string", "description": "要替换的文本(精确匹配)" },
-                    "new_string": { "type": "string", "description": "替换成的文本(必须与 old_string 不同)" },
-                    "replace_all": { "type": "boolean", "description": "当 old_string 在文件中出现多次且你想全部替换时设为 true(例如用户要求替换'所有'/'全部'时)。默认 false 时 old_string 必须在文件中唯一。" }
-                },
-                "required": ["path", "old_string", "new_string"]
-            }),
-        },
-        AgentToolSchema {
-            name: "multi_edit_file",
-            description: "对同一文件按顺序应用多处精确替换。每处给出 old_string(精确匹配,含缩进)和 new_string。按顺序应用，任一处失败则整体不写入。适合一次改动多处的场景，比多次 edit_file 省轮次。".into(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string", "description": "相对工作区根的文件路径" },
-                    "edits": {
-                        "type": "array",
-                        "minItems": 1,
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "old_string": { "type": "string", "description": "要替换的文本(精确匹配)" },
-                                "new_string": { "type": "string", "description": "替换成的文本" },
-                                "replace_all": { "type": "boolean", "description": "该处 old_string 出现多次时是否全部替换，默认 false" }
-                            },
-                            "required": ["old_string", "new_string"]
-                        }
-                    }
-                },
-                "required": ["path", "edits"]
-            }),
-        },
-        AgentToolSchema {
-            name: "delete_file",
-            description: "删除工作区内指定文件。删除目录请用 run_command（rmdir）。删除不可撤销。".into(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string", "description": "相对工作区根的文件路径" }
-                },
-                "required": ["path"]
-            }),
-        },
-        AgentToolSchema {
-            name: "run_command",
-            description: command_description(level),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "command": { "type": "string", "description": "要执行的命令（如 cargo test）" }
-                },
-                "required": ["command"]
-            }),
-        },
-        AgentToolSchema {
-            name: "read_acceptance_report",
-            description: "读取验收运行的 report.json。默认读取最新一次验收运行；用于判断 ok 和 failureSummary。".into(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "run_id": { "type": "string", "description": "验收运行 ID；省略时读取最新一次" }
-                }
-            }),
-        },
-        AgentToolSchema {
-            name: "read_runtime_log",
-            description: "读取验收运行日志尾部内容。默认读取最新一次验收运行；max_lines 默认由模型调用方可省略，建议先读少量行。".into(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "run_id": { "type": "string", "description": "验收运行 ID；省略时读取最新一次" },
-                    "file_name": { "type": "string", "description": "日志文件名，例如 runtime.log" },
-                    "max_lines": { "type": "integer", "minimum": 1, "maximum": 200, "description": "读取尾部行数，默认 80" }
-                },
-                "required": ["file_name"]
-            }),
-        },
-        AgentToolSchema {
-            name: "list_acceptance_runs",
-            description: "列出最近验收运行 ID。limit 会限制到 1 到 20。".into(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "limit": { "type": "integer", "minimum": 1, "maximum": 20, "description": "返回条数，默认 5" }
-                }
-            }),
-        },
-    ];
-    schemas.extend(web_schemas);
-    schemas
-}
 
 fn error_event(body: &str) -> AgentEvent {
     AgentEvent {
@@ -596,108 +422,16 @@ fn summary_event(body: &str) -> AgentEvent {
     }
 }
 
-fn tool_call_event(call: &AgentToolCall) -> AgentEvent {
-    let (label, detail, body) = match &call.arguments {
-        AgentToolArgs::Read { path } => ("read_file", path.clone(), format!("path: {path}")),
-        AgentToolArgs::Write { path, content } => (
-            "write_file",
-            path.clone(),
-            format!(
-                "path: {path}\ncontent ({} 行):\n{}",
-                content.lines().count().max(1),
-                content
-            ),
-        ),
-        AgentToolArgs::ListFiles { path, recursive } => {
-            let p = path.as_deref().unwrap_or(".");
-            (
-                "list_files",
-                format!("{p} (recursive={recursive})"),
-                format!("path: {p}\nrecursive: {recursive}"),
-            )
-        }
-        AgentToolArgs::Grep {
-            pattern,
-            path,
-            include,
-        } => {
-            let p = path.as_deref().unwrap_or(".");
-            let inc = include.as_deref().unwrap_or("(无)");
-            (
-                "grep",
-                format!("/{pattern}/ in {p}"),
-                format!("pattern: {pattern}\npath: {p}\ninclude: {inc}"),
-            )
-        }
-        AgentToolArgs::EditFile {
-            path,
-            old_string,
-            new_string,
-            replace_all,
-        } => {
-            let old_preview = old_string.lines().take(3).collect::<Vec<_>>().join("\n");
-            let old_suffix = if old_string.lines().count() > 3 {
-                "\n..."
-            } else {
-                ""
-            };
-            (
-                "edit_file",
-                format!("{} (replace_all={})", path, replace_all),
-                format!(
-                    "path: {}\nreplace_all: {}\nold_string:\n{}{}\nnew_string ({} 行):",
-                    path,
-                    replace_all,
-                    old_preview,
-                    old_suffix,
-                    new_string.lines().count().max(1)
-                ),
-            )
-        }
-        AgentToolArgs::ReadAcceptanceReport { run_id } => {
-            let id = run_id.as_deref().unwrap_or("latest");
-            (
-                "read_acceptance_report",
-                id.to_string(),
-                format!("run_id: {id}"),
-            )
-        }
-        AgentToolArgs::ReadRuntimeLog {
-            run_id,
-            file_name,
-            max_lines,
-        } => {
-            let id = run_id.as_deref().unwrap_or("latest");
-            (
-                "read_runtime_log",
-                format!("{file_name} ({id}, max_lines={max_lines})"),
-                format!("run_id: {id}\nfile_name: {file_name}\nmax_lines: {max_lines}"),
-            )
-        }
-        AgentToolArgs::ListAcceptanceRuns { limit } => (
-            "list_acceptance_runs",
-            format!("limit={limit}"),
-            format!("limit: {limit}"),
-        ),
-        AgentToolArgs::RunCommand { command } => {
-            ("run_command", command.clone(), format!("command: {command}"))
-        }
-        AgentToolArgs::WebSearch { query, max_results } => {
-            ("web_search", query.clone(), format!("query: {query}\nmax_results: {max_results}"))
-        }
-            AgentToolArgs::WebFetch { url, max_chars } => {
-                ("web_fetch", url.clone(), format!("url: {url}\nmax_chars: {max_chars}"))
-            }
-            AgentToolArgs::MultiEditFile { path, edits } => {
-                ("multi_edit_file", path.clone(), format!("path: {path}\nedits: {} 处", edits.len()))
-            }
-            AgentToolArgs::DeleteFile { path } => {
-                ("delete_file", path.clone(), format!("path: {path}"))
-            }
-        };
+fn tool_call_event(registry: &ToolRegistry, call: &AgentToolCall) -> AgentEvent {
+    // 通过 registry 查 spec 渲染 (title, body)；查不到时回退到工具名 + id。
+    let wire = tool_spec::wire_name(&call.name);
+    let (title, body) = match tool_spec::find_tool(registry, wire) {
+        Some(spec) => spec.describe(&call.arguments),
+        None => (wire.to_string(), format!("id: {}", call.id)),
+    };
     AgentEvent {
         kind: "tool_call".into(),
-        title: format!("{label}: {detail}"),
+        title,
         body,
         tool_call_id: Some(call.id.clone()),
     }
@@ -777,12 +511,22 @@ pub fn run_mock_agent_task(workspace_root: PathBuf, prompt: &str) -> AppResult<A
 
 #[cfg(test)]
 mod tests {
+    use super::super::command_risk::RiskLevel;
     use super::super::domain::{AgentToolSchema, ChangeKind, ConversationTurn, ProviderResponse, SystemPrompt};
     use super::super::provider::{fake_read_call, fake_write_call, FakeProvider};
-    use super::super::tools::ToolDispatcher;
+    use super::super::tool_spec::{build_tool_registry, ToolRegistry};
+    use super::super::tools::WorkspaceMode;
+    use super::super::workspace::WorkspaceFs;
     use super::{run_agent_task, run_mock_agent_task, EventSink};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
+
+    /// 构造测试用 registry：fs 指向 root，无 confirm_handler / search_config。
+    fn test_registry(root: &std::path::Path) -> Arc<ToolRegistry> {
+        let fs = WorkspaceFs::new(root.to_path_buf());
+        let http = reqwest::Client::new();
+        Arc::new(build_tool_registry(fs, RiskLevel::Standard, None, None, http))
+    }
 
     struct CollectingSink {
         events: Mutex<Vec<super::AgentEvent>>,
@@ -811,19 +555,26 @@ mod tests {
 
     #[test]
     fn verify_tool_schemas_include_web_tools() {
-        use super::super::command_risk::RiskLevel;
-        use super::super::tools::WorkspaceMode;
-        let full = super::tool_schemas(RiskLevel::Standard, WorkspaceMode::Full);
+        use super::super::tool_spec::tool_schemas;
+        let root = std::env::temp_dir().join(format!("sophoni-schema-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let registry = test_registry(&root);
+
+        let full = tool_schemas(&registry, WorkspaceMode::Full);
         let names: Vec<&str> = full.iter().map(|s| s.name).collect();
         println!("Full mode tools: {names:?}");
         assert!(names.contains(&"web_search"), "web_search 应在 Full 模式可用");
         assert!(names.contains(&"web_fetch"), "web_fetch 应在 Full 模式可用");
+        assert!(names.contains(&"read_file"), "read_file 应在 Full 模式可用");
 
-        let chat = super::tool_schemas(RiskLevel::Standard, WorkspaceMode::ChatOnly);
+        let chat = tool_schemas(&registry, WorkspaceMode::ChatOnly);
         let chat_names: Vec<&str> = chat.iter().map(|s| s.name).collect();
         println!("ChatOnly mode tools: {chat_names:?}");
         assert!(chat_names.contains(&"web_search"), "web_search 应在 ChatOnly 模式可用");
         assert!(chat_names.contains(&"web_fetch"), "web_fetch 应在 ChatOnly 模式可用");
+        assert!(!chat_names.contains(&"read_file"), "read_file 不应在 ChatOnly 模式可用");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -908,13 +659,15 @@ mod tests {
             ProviderResponse::ToolCalls(vec![fake_write_call("c2", "README.md", "new\n")]),
             ProviderResponse::FinalAnswer("done".into()),
         ]);
-        let tools = ToolDispatcher::new(root.clone());
+        let tools = test_registry(&root);
         let sink = CollectingSink::new();
         let cancel = Arc::new(AtomicBool::new(false));
 
         let result = run_agent_task(
             Box::new(provider),
             &tools,
+            RiskLevel::Standard,
+            WorkspaceMode::Full,
             &sink,
             &cancel,
             SystemPrompt("sys".into()),
@@ -943,13 +696,15 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
 
         let provider = FakeProvider::new(vec![ProviderResponse::FinalAnswer("done".into())]);
-        let tools = ToolDispatcher::new(root.clone());
+        let tools = test_registry(&root);
         let sink = CollectingSink::new();
         let cancel = Arc::new(AtomicBool::new(false));
 
         let result = run_agent_task(
             Box::new(provider),
             &tools,
+            RiskLevel::Standard,
+            WorkspaceMode::Full,
             &sink,
             &cancel,
             SystemPrompt("sys".into()),
@@ -982,13 +737,15 @@ mod tests {
             ConversationTurn::Assistant { content: Some("第一个回答".into()), tool_calls: vec![] },
         ];
         let provider = FakeProvider::new(vec![ProviderResponse::FinalAnswer("第二个回答".into())]);
-        let tools = ToolDispatcher::new(root.clone());
+        let tools = test_registry(&root);
         let sink = CollectingSink::new();
         let cancel = Arc::new(AtomicBool::new(false));
 
         let result = run_agent_task(
             Box::new(provider),
             &tools,
+            RiskLevel::Standard,
+            WorkspaceMode::Full,
             &sink,
             &cancel,
             SystemPrompt("sys".into()),
@@ -1020,13 +777,15 @@ mod tests {
         let provider = FakeProvider::always(ProviderResponse::ToolCalls(vec![fake_read_call(
             "c", "f.txt",
         )]));
-        let tools = ToolDispatcher::new(root.clone());
+        let tools = test_registry(&root);
         let sink = CollectingSink::new();
         let cancel = Arc::new(AtomicBool::new(false));
 
         let _result = run_agent_task(
             Box::new(provider),
             &tools,
+            RiskLevel::Standard,
+            WorkspaceMode::Full,
             &sink,
             &cancel,
             SystemPrompt("s".into()),
@@ -1057,7 +816,7 @@ mod tests {
         let provider = FakeProvider::always(ProviderResponse::ToolCalls(vec![fake_read_call(
             "c", "f.txt",
         )]));
-        let tools = ToolDispatcher::new(root.clone());
+        let tools = test_registry(&root);
         let sink = CollectingSink::new();
         let cancel = Arc::new(AtomicBool::new(false));
         cancel.store(true, Ordering::Relaxed);
@@ -1065,6 +824,8 @@ mod tests {
         let _result = run_agent_task(
             Box::new(provider),
             &tools,
+            RiskLevel::Standard,
+            WorkspaceMode::Full,
             &sink,
             &cancel,
             SystemPrompt("s".into()),
@@ -1092,13 +853,15 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
 
         let provider = FakeProvider::always_error("boom");
-        let tools = ToolDispatcher::new(root.clone());
+        let tools = test_registry(&root);
         let sink = CollectingSink::new();
         let cancel = Arc::new(AtomicBool::new(false));
 
         let _result = run_agent_task(
             Box::new(provider),
             &tools,
+            RiskLevel::Standard,
+            WorkspaceMode::Full,
             &sink,
             &cancel,
             SystemPrompt("s".into()),
@@ -1129,7 +892,6 @@ mod tests {
     async fn run_command_live_invokes_tool_against_real_provider() {
         use super::super::domain::{AgentConfig, AgentEvent, SystemPrompt};
         use super::super::provider::OpenAICompatibleProvider;
-        use super::super::tools::ToolDispatcher;
         use super::{run_agent_task, EventSink};
 
         let (config, provider_name) = AgentConfig::load().expect("AgentConfig 未配置");
@@ -1143,9 +905,9 @@ mod tests {
             .current_dir(&root)
             .output();
 
+        let tools = test_registry(&root);
         let provider: Box<dyn super::super::provider::AgentProvider> =
-            Box::new(OpenAICompatibleProvider::new(config));
-        let tools = ToolDispatcher::new(root.clone());
+            Box::new(OpenAICompatibleProvider::new(config, tools.clone()));
         let cancel = std::sync::atomic::AtomicBool::new(false);
 
         struct Collector(std::sync::Mutex<Vec<AgentEvent>>);
@@ -1160,6 +922,8 @@ mod tests {
         let result = run_agent_task(
             provider,
             &tools,
+            RiskLevel::Standard,
+            WorkspaceMode::Full,
             &sink,
             &cancel,
             SystemPrompt(String::new()),
@@ -1205,7 +969,6 @@ mod tests {
     async fn run_command_self_heal_fixes_compile_error_against_real_provider() {
         use super::super::domain::{AgentConfig, AgentEvent, SystemPrompt};
         use super::super::provider::OpenAICompatibleProvider;
-        use super::super::tools::ToolDispatcher;
         use super::{run_agent_task, EventSink};
 
         let (config, provider_name) = AgentConfig::load().expect("AgentConfig 未配置");
@@ -1226,9 +989,9 @@ mod tests {
         )
         .unwrap();
 
+        let tools = test_registry(&root);
         let provider: Box<dyn super::super::provider::AgentProvider> =
-            Box::new(OpenAICompatibleProvider::new(config));
-        let tools = ToolDispatcher::new(root.clone());
+            Box::new(OpenAICompatibleProvider::new(config, tools.clone()));
         let cancel = std::sync::atomic::AtomicBool::new(false);
 
         struct Collector(std::sync::Mutex<Vec<AgentEvent>>);
@@ -1245,6 +1008,8 @@ mod tests {
         let result = run_agent_task(
             provider,
             &tools,
+            RiskLevel::Standard,
+            WorkspaceMode::Full,
             &sink,
             &cancel,
             SystemPrompt(String::new()),
@@ -1334,7 +1099,6 @@ mod tests {
         use super::super::command_risk::RiskLevel;
         use super::super::domain::{AgentConfig, AgentEvent, SystemPrompt};
         use super::super::provider::OpenAICompatibleProvider;
-        use super::super::tools::ToolDispatcher;
         use super::{run_agent_task, EventSink};
 
         let (config, provider_name) = AgentConfig::load().expect("AgentConfig 未配置");
@@ -1344,10 +1108,16 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("junk.txt"), "delete me\n").unwrap();
 
+        let tools: Arc<ToolRegistry> = {
+            let fs = super::super::workspace::WorkspaceFs::new(root.clone());
+            let http = reqwest::Client::new();
+            Arc::new(super::super::tool_spec::build_tool_registry(
+                fs, RiskLevel::Unrestricted, None, None, http,
+            ))
+        };
         let provider: Box<dyn super::super::provider::AgentProvider> =
-            Box::new(OpenAICompatibleProvider::new(config));
-        let tools = ToolDispatcher::new(root.clone())
-            .with_risk_level(RiskLevel::Unrestricted);
+            Box::new(OpenAICompatibleProvider::new(config, tools.clone()));
+// tools 已在上方构造（Unrestricted）
         let cancel = std::sync::atomic::AtomicBool::new(false);
 
         struct Collector(std::sync::Mutex<Vec<AgentEvent>>);
@@ -1362,6 +1132,8 @@ mod tests {
         let result = run_agent_task(
             provider,
             &tools,
+            RiskLevel::Standard,
+            WorkspaceMode::Full,
             &sink,
             &cancel,
             SystemPrompt(String::new()),

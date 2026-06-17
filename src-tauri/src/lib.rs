@@ -11,7 +11,9 @@ use core::domain::{AgentConfig, AgentEvent, ConfigStatus, Conversation, Conversa
 use core::errors::AppError;
 use core::provider::OpenAICompatibleProvider;
 use core::storage::Storage;
-use core::tools::{ConfirmHandler, ToolDispatcher};
+use core::tools::ConfirmHandler;
+use core::tool_spec::{build_tool_registry, ToolRegistry};
+use core::workspace::WorkspaceFs;
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::{oneshot, Mutex};
 
@@ -239,20 +241,24 @@ async fn run_agent_task(
         Some(path) => (path.clone(), core::tools::WorkspaceMode::Full),
         None => ("/tmp/sophoni-chat".to_string(), core::tools::WorkspaceMode::ChatOnly),
     };
-    let provider = OpenAICompatibleProvider::new(config);
-
-    let confirm_handler = Arc::new(TauriConfirmHandler {
+    let confirm_handler: Arc<dyn ConfirmHandler> = Arc::new(TauriConfirmHandler {
         app: app.clone(),
         pending: state.confirm_pending.clone(),
     });
-    let tools = ToolDispatcher::new(PathBuf::from(&workspace))
-        .with_risk_level(risk_level)
-        .with_confirm_handler(confirm_handler)
-        .with_workspace_mode(workspace_mode);
-    let mut tools = tools;
-    if let Some(sc) = search_config {
-        tools = tools.with_search_config(sc);
-    }
+    let fs = WorkspaceFs::new(PathBuf::from(&workspace));
+    let http_client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .expect("failed to build http client");
+    let registry: ToolRegistry = build_tool_registry(
+        fs,
+        risk_level,
+        Some(confirm_handler),
+        search_config,
+        http_client,
+    );
+    let registry = Arc::new(registry);
+    let provider = OpenAICompatibleProvider::new(config, registry.clone());
     let sink = AppEventSink { app };
 
     // 在 async 外创建/复用 conversation + 读历史 turns 与记忆（Storage/Connection 不是 Send，不能跨 await）
@@ -267,7 +273,9 @@ async fn run_agent_task(
 
     let result = run_agent_task_inner(
         Box::new(provider),
-        &tools,
+        &registry,
+        risk_level,
+        workspace_mode,
         &sink,
         &state.cancel,
         SystemPrompt(String::new()),

@@ -9,6 +9,7 @@ pub mod domain;
 pub mod errors;
 pub mod provider;
 pub mod storage;
+pub mod tool_spec;
 pub mod tools;
 pub mod web;
 pub mod workspace;

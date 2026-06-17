@@ -1,35 +1,15 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+#[cfg(test)]
+use super::domain::{AgentToolArgs, AgentToolName};
 use super::domain::{
-    AgentConfig, AgentToolArgs, AgentToolCall, AgentToolName, AgentToolSchema, ConversationTurn,
+    AgentConfig, AgentToolCall, AgentToolSchema, ConversationTurn,
     ProviderResponse, SystemPrompt,
 };
 use super::errors::{AppError, AppResult};
+use super::tool_spec::{find_tool, ToolRegistry};
 use tracing::{error, info, warn};
-
-const READ_RUNTIME_LOG_DEFAULT_MAX_LINES: usize = 80;
-const READ_RUNTIME_LOG_MAX_LINES: u64 = 200;
-const LIST_ACCEPTANCE_RUNS_DEFAULT_LIMIT: usize = 5;
-const LIST_ACCEPTANCE_RUNS_MAX_LIMIT: u64 = 20;
-
-/// 从工具参数 JSON 取必填字符串字段，缺失则返回错误（错误消息含工具名）。
-fn req_str(args: &serde_json::Value, key: &str, tool: &str) -> AppResult<String> {
-    args.get(key)
-        .and_then(|v| v.as_str())
-        .map(String::from)
-        .ok_or_else(|| AppError::Provider(format!("{tool} missing {key}")))
-}
-
-/// 从工具参数 JSON 取可选字符串字段，缺失返回 None。
-fn opt_str(args: &serde_json::Value, key: &str) -> Option<String> {
-    args.get(key).and_then(|v| v.as_str()).map(String::from)
-}
-
-/// 从工具参数 JSON 取可选布尔字段，缺失默认 false。
-fn opt_bool(args: &serde_json::Value, key: &str) -> bool {
-    args.get(key).and_then(|v| v.as_bool()).unwrap_or(false)
-}
 
 /// 接收流式文本增量的回调。provider 解析 SSE 时，每当收到一段 `delta.content`
 /// 就调用它。agent.rs 负责把回调桥接到 `EventSink`（构造 `kind="token"` 事件）。
@@ -153,19 +133,28 @@ pub fn fake_write_call(id: &str, path: &str, content: &str) -> AgentToolCall {
 pub struct OpenAICompatibleProvider {
     config: AgentConfig,
     http: reqwest::Client,
+    /// 工具 registry：wire 格式 ↔ AgentToolCall 的转换走各工具的 parse/serialize_args。
+    registry: std::sync::Arc<ToolRegistry>,
 }
 
 impl OpenAICompatibleProvider {
-    pub fn new(config: AgentConfig) -> Self {
+    pub fn new(config: AgentConfig, registry: std::sync::Arc<ToolRegistry>) -> Self {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .expect("failed to build reqwest client");
-        Self { config, http }
+        Self {
+            config,
+            http,
+            registry,
+        }
     }
 
     /// Translate a model-agnostic turn into the GLM wire format.
-    pub(crate) fn turn_to_openai_message(turn: &ConversationTurn) -> OpenAIMessage {
+    pub(crate) fn turn_to_openai_message(
+        turn: &ConversationTurn,
+        registry: &ToolRegistry,
+    ) -> OpenAIMessage {
         match turn {
             ConversationTurn::User { content } => OpenAIMessage {
                 role: "user".to_string(),
@@ -182,7 +171,12 @@ impl OpenAICompatibleProvider {
                 tool_calls: if tool_calls.is_empty() {
                     None
                 } else {
-                    Some(tool_calls.iter().map(Self::tool_call_to_openai).collect())
+                    Some(
+                        tool_calls
+                            .iter()
+                            .map(|c| Self::tool_call_to_openai(c, registry))
+                            .collect(),
+                    )
                 },
                 tool_call_id: None,
             },
@@ -198,80 +192,12 @@ impl OpenAICompatibleProvider {
         }
     }
 
-    fn tool_call_to_openai(call: &AgentToolCall) -> OpenAIToolCall {
-        let (name, arguments) = match &call.arguments {
-            AgentToolArgs::Read { path } => ("read_file", serde_json::json!({ "path": path })),
-            AgentToolArgs::Write { path, content } => (
-                "write_file",
-                serde_json::json!({ "path": path, "content": content }),
-            ),
-            AgentToolArgs::ListFiles { path, recursive } => (
-                "list_files",
-                serde_json::json!({ "path": path, "recursive": recursive }),
-            ),
-            AgentToolArgs::Grep {
-                pattern,
-                path,
-                include,
-            } => (
-                "grep",
-                serde_json::json!({ "pattern": pattern, "path": path, "include": include }),
-            ),
-            AgentToolArgs::EditFile {
-                path,
-                old_string,
-                new_string,
-                replace_all,
-            } => (
-                "edit_file",
-                serde_json::json!({
-                    "path": path,
-                    "old_string": old_string,
-                    "new_string": new_string,
-                    "replace_all": replace_all
-                }),
-            ),
-            AgentToolArgs::ReadAcceptanceReport { run_id } => (
-                "read_acceptance_report",
-                serde_json::json!({ "run_id": run_id }),
-            ),
-            AgentToolArgs::ReadRuntimeLog {
-                run_id,
-                file_name,
-                max_lines,
-            } => (
-                "read_runtime_log",
-                serde_json::json!({
-                    "run_id": run_id,
-                    "file_name": file_name,
-                    "max_lines": max_lines
-                }),
-            ),
-            AgentToolArgs::ListAcceptanceRuns { limit } => (
-                "list_acceptance_runs",
-                serde_json::json!({ "limit": limit }),
-            ),
-            AgentToolArgs::RunCommand { command } => (
-                "run_command",
-                serde_json::json!({ "command": command }),
-            ),
-            AgentToolArgs::WebSearch { query, max_results } => (
-                "web_search",
-                serde_json::json!({ "query": query, "max_results": max_results }),
-            ),
-            AgentToolArgs::WebFetch { url, max_chars } => (
-                "web_fetch",
-                serde_json::json!({ "url": url, "max_chars": max_chars }),
-            ),
-            AgentToolArgs::MultiEditFile { path, edits } => (
-                "multi_edit_file",
-                serde_json::json!({ "path": path, "edits": edits }),
-            ),
-            AgentToolArgs::DeleteFile { path } => (
-                "delete_file",
-                serde_json::json!({ "path": path }),
-            ),
-        };
+    fn tool_call_to_openai(call: &AgentToolCall, registry: &ToolRegistry) -> OpenAIToolCall {
+        let name = super::tool_spec::wire_name(&call.name);
+        let spec = find_tool(registry, name).unwrap_or_else(|| {
+            panic!("tool_call_to_openai: 工具 {name} 未在 registry 注册")
+        });
+        let arguments = spec.serialize_args(&call.arguments);
         OpenAIToolCall {
             id: call.id.clone(),
             kind: "function".to_string(),
@@ -294,7 +220,10 @@ impl OpenAICompatibleProvider {
     }
 
     /// Translate the GLM response DTO into a model-agnostic ProviderResponse.
-    pub(crate) fn translate_response(resp: OpenAIResponse) -> AppResult<ProviderResponse> {
+    pub(crate) fn translate_response(
+        resp: OpenAIResponse,
+        registry: &ToolRegistry,
+    ) -> AppResult<ProviderResponse> {
         let choice = resp
             .choices
             .into_iter()
@@ -308,137 +237,20 @@ impl OpenAICompatibleProvider {
         } else {
             let calls = tool_calls
                 .into_iter()
-                .map(Self::parse_tool_call)
+                .map(|gtc| Self::parse_tool_call(gtc, registry))
                 .collect::<AppResult<Vec<_>>>()?;
             Ok(ProviderResponse::ToolCalls(calls))
         }
     }
 
-    fn parse_tool_call(gtc: OpenAIToolCall) -> AppResult<AgentToolCall> {
-        let name = match gtc.function.name.as_str() {
-            "read_file" => AgentToolName::ReadFile,
-            "write_file" => AgentToolName::WriteFile,
-            "list_files" => AgentToolName::ListFiles,
-            "grep" => AgentToolName::Grep,
-            "edit_file" => AgentToolName::EditFile,
-            "read_acceptance_report" => AgentToolName::ReadAcceptanceReport,
-            "read_runtime_log" => AgentToolName::ReadRuntimeLog,
-            "list_acceptance_runs" => AgentToolName::ListAcceptanceRuns,
-            "run_command" => AgentToolName::RunCommand,
-            "web_search" => AgentToolName::WebSearch,
-            "web_fetch" => AgentToolName::WebFetch,
-            "multi_edit_file" => AgentToolName::MultiEditFile,
-            "delete_file" => AgentToolName::DeleteFile,
-            other => return Err(AppError::Provider(format!("unknown tool: {other}"))),
-        };
+    /// 用 registry 查 spec，调 spec.parse 把 wire JSON 解析成 AgentToolCall。
+    fn parse_tool_call(gtc: OpenAIToolCall, registry: &ToolRegistry) -> AppResult<AgentToolCall> {
+        let spec = find_tool(registry, &gtc.function.name).ok_or_else(|| {
+            AppError::Provider(format!("unknown tool: {}", gtc.function.name))
+        })?;
         let args: serde_json::Value = serde_json::from_str(&gtc.function.arguments)
             .map_err(|e| AppError::Provider(format!("invalid tool arguments: {e}")))?;
-        let tool = gtc.function.name.as_str();
-        let arguments = match name {
-            AgentToolName::ReadFile => {
-                let path = req_str(&args, "path", tool)?;
-                AgentToolArgs::Read { path }
-            }
-            AgentToolName::WriteFile => {
-                let path = req_str(&args, "path", tool)?;
-                let content = req_str(&args, "content", tool)?;
-                AgentToolArgs::Write { path, content }
-            }
-            AgentToolName::ListFiles => {
-                let path = opt_str(&args, "path");
-                let recursive = opt_bool(&args, "recursive");
-                AgentToolArgs::ListFiles { path, recursive }
-            }
-            AgentToolName::Grep => {
-                let pattern = req_str(&args, "pattern", tool)?;
-                let path = opt_str(&args, "path");
-                let include = opt_str(&args, "include");
-                AgentToolArgs::Grep {
-                    pattern,
-                    path,
-                    include,
-                }
-            }
-            AgentToolName::EditFile => {
-                let path = req_str(&args, "path", tool)?;
-                let old_string = req_str(&args, "old_string", tool)?;
-                let new_string = req_str(&args, "new_string", tool)?;
-                let replace_all = opt_bool(&args, "replace_all");
-                AgentToolArgs::EditFile {
-                    path,
-                    old_string,
-                    new_string,
-                    replace_all,
-                }
-            }
-            AgentToolName::ReadAcceptanceReport => {
-                let run_id = opt_str(&args, "run_id");
-                AgentToolArgs::ReadAcceptanceReport { run_id }
-            }
-            AgentToolName::ReadRuntimeLog => {
-                let run_id = opt_str(&args, "run_id");
-                let file_name = req_str(&args, "file_name", tool)?;
-                let max_lines = args
-                    .get("max_lines")
-                    .and_then(|v| v.as_u64())
-                    .map(|v| v.clamp(1, READ_RUNTIME_LOG_MAX_LINES) as usize)
-                    .unwrap_or(READ_RUNTIME_LOG_DEFAULT_MAX_LINES);
-                AgentToolArgs::ReadRuntimeLog {
-                    run_id,
-                    file_name,
-                    max_lines,
-                }
-            }
-            AgentToolName::ListAcceptanceRuns => {
-                let limit = args
-                    .get("limit")
-                    .and_then(|v| v.as_u64())
-                    .map(|v| v.clamp(1, LIST_ACCEPTANCE_RUNS_MAX_LIMIT) as usize)
-                    .unwrap_or(LIST_ACCEPTANCE_RUNS_DEFAULT_LIMIT);
-                AgentToolArgs::ListAcceptanceRuns { limit }
-            }
-            AgentToolName::RunCommand => {
-                let command = req_str(&args, "command", tool)?;
-                AgentToolArgs::RunCommand { command }
-            }
-            AgentToolName::WebSearch => {
-                let query = req_str(&args, "query", tool)?;
-                let max_results = args
-                    .get("max_results")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(5) as usize;
-                AgentToolArgs::WebSearch { query, max_results }
-            }
-            AgentToolName::WebFetch => {
-                let url = req_str(&args, "url", tool)?;
-                let max_chars = args
-                    .get("max_chars")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(8000) as usize;
-                AgentToolArgs::WebFetch { url, max_chars }
-            }
-            AgentToolName::MultiEditFile => {
-                let path = req_str(&args, "path", tool)?;
-                let edits_val = args
-                    .get("edits")
-                    .ok_or_else(|| AppError::Provider(format!("{tool} missing edits")))?;
-                let edits: Vec<super::domain::MultiEdit> = serde_json::from_value(edits_val.clone())
-                    .map_err(|e| AppError::Provider(format!("{tool} invalid edits: {e}")))?;
-                if edits.is_empty() {
-                    return Err(AppError::Provider(format!("{tool} edits 不能为空")));
-                }
-                AgentToolArgs::MultiEditFile { path, edits }
-            }
-            AgentToolName::DeleteFile => {
-                let path = req_str(&args, "path", tool)?;
-                AgentToolArgs::DeleteFile { path }
-            }
-        };
-        Ok(AgentToolCall {
-            id: gtc.id,
-            name,
-            arguments,
-        })
+        spec.parse(&gtc.id, &args)
     }
 }
 
@@ -460,7 +272,7 @@ impl AgentProvider for OpenAICompatibleProvider {
             tool_call_id: None,
         });
         for turn in turns {
-            messages.push(Self::turn_to_openai_message(turn));
+            messages.push(Self::turn_to_openai_message(turn, &self.registry));
         }
 
         let openai_tools: Vec<OpenAIToolDef> = tools.iter().map(Self::tool_schema_to_openai).collect();
@@ -569,7 +381,7 @@ impl AgentProvider for OpenAICompatibleProvider {
                 },
             }],
         };
-        Self::translate_response(openai_resp)
+        Self::translate_response(openai_resp, &self.registry)
     }
 }
 
@@ -764,16 +576,30 @@ impl SseLineBuffer {
 #[cfg(test)]
 mod tests {
     use super::super::domain::{AgentToolArgs, AgentToolResult, ConversationTurn, ProviderResponse};
+    use super::super::command_risk::RiskLevel;
+    use super::super::tool_spec::build_tool_registry;
+    use super::super::workspace::WorkspaceFs;
     use super::{
         OpenAIChoice, OpenAIFunction, OpenAIMessage, OpenAICompatibleProvider, OpenAIResponse,
         OpenAIToolCall, SseLineBuffer, StreamChunk, StreamToolCall, StreamToolFunction,
         ToolCallAccumulator,
     };
+    use std::sync::Arc;
+
+    /// 构造测试用 registry：parse/serialize 不碰 fs，路径随便给。
+    fn test_registry() -> Arc<super::super::tool_spec::ToolRegistry> {
+        let fs = WorkspaceFs::new(std::env::temp_dir().join(format!(
+            "sophoni-provider-test-{}",
+            uuid::Uuid::new_v4()
+        )));
+        let http = reqwest::Client::new();
+        Arc::new(build_tool_registry(fs, RiskLevel::Standard, None, None, http))
+    }
 
     #[test]
     fn glm_translates_user_turn_to_message() {
         let turn = ConversationTurn::User { content: "hi".into() };
-        let msg = OpenAICompatibleProvider::turn_to_openai_message(&turn);
+        let msg = OpenAICompatibleProvider::turn_to_openai_message(&turn, &test_registry());
         assert_eq!(msg.role, "user");
         assert_eq!(msg.content.as_deref(), Some("hi"));
         assert!(msg.tool_calls.is_none());
@@ -791,7 +617,7 @@ mod tests {
                 file_change: None,
             },
         };
-        let msg = OpenAICompatibleProvider::turn_to_openai_message(&turn);
+        let msg = OpenAICompatibleProvider::turn_to_openai_message(&turn, &test_registry());
         assert_eq!(msg.role, "tool");
         assert_eq!(msg.tool_call_id.as_deref(), Some("tc-9"));
         assert_eq!(msg.content.as_deref(), Some("file body"));
@@ -816,7 +642,7 @@ mod tests {
                 },
             }],
         };
-        let translated = OpenAICompatibleProvider::translate_response(resp).unwrap();
+        let translated = OpenAICompatibleProvider::translate_response(resp, &test_registry()).unwrap();
         match translated {
             ProviderResponse::ToolCalls(calls) => {
                 assert_eq!(calls.len(), 1);
@@ -842,7 +668,7 @@ mod tests {
                 },
             }],
         };
-        let translated = OpenAICompatibleProvider::translate_response(resp).unwrap();
+        let translated = OpenAICompatibleProvider::translate_response(resp, &test_registry()).unwrap();
         match translated {
             ProviderResponse::FinalAnswer(t) => assert_eq!(t, "all done"),
             _ => panic!("expected FinalAnswer"),
@@ -868,7 +694,7 @@ mod tests {
                 },
             }],
         };
-        let translated = OpenAICompatibleProvider::translate_response(resp).unwrap();
+        let translated = OpenAICompatibleProvider::translate_response(resp, &test_registry()).unwrap();
         match translated {
             ProviderResponse::ToolCalls(calls) => {
                 assert_eq!(calls.len(), 1);
@@ -903,7 +729,7 @@ mod tests {
                 },
             }],
         };
-        let translated = OpenAICompatibleProvider::translate_response(resp).unwrap();
+        let translated = OpenAICompatibleProvider::translate_response(resp, &test_registry()).unwrap();
         match translated {
             ProviderResponse::ToolCalls(calls) => {
                 assert_eq!(calls.len(), 1);
@@ -943,7 +769,7 @@ mod tests {
                 },
             }],
         };
-        let translated = OpenAICompatibleProvider::translate_response(resp).unwrap();
+        let translated = OpenAICompatibleProvider::translate_response(resp, &test_registry()).unwrap();
         match translated {
             ProviderResponse::ToolCalls(calls) => {
                 assert_eq!(calls.len(), 1);
@@ -983,7 +809,7 @@ mod tests {
                 },
             }],
         };
-        let translated = OpenAICompatibleProvider::translate_response(resp).unwrap();
+        let translated = OpenAICompatibleProvider::translate_response(resp, &test_registry()).unwrap();
         match translated {
             ProviderResponse::ToolCalls(calls) => match &calls[0].arguments {
                 AgentToolArgs::ReadRuntimeLog { max_lines, .. } => {
@@ -1014,7 +840,7 @@ mod tests {
                 },
             }],
         };
-        let translated = OpenAICompatibleProvider::translate_response(resp).unwrap();
+        let translated = OpenAICompatibleProvider::translate_response(resp, &test_registry()).unwrap();
         match translated {
             ProviderResponse::ToolCalls(calls) => {
                 assert_eq!(calls.len(), 1);
@@ -1048,7 +874,7 @@ mod tests {
                 },
             }],
         };
-        let translated = OpenAICompatibleProvider::translate_response(resp).unwrap();
+        let translated = OpenAICompatibleProvider::translate_response(resp, &test_registry()).unwrap();
         match translated {
             ProviderResponse::ToolCalls(calls) => match &calls[0].arguments {
                 AgentToolArgs::ListAcceptanceRuns { limit } => {
@@ -1079,7 +905,7 @@ mod tests {
                 },
             }],
         };
-        let translated = OpenAICompatibleProvider::translate_response(resp).unwrap();
+        let translated = OpenAICompatibleProvider::translate_response(resp, &test_registry()).unwrap();
         match translated {
             ProviderResponse::ToolCalls(calls) => {
                 assert_eq!(calls.len(), 1);
@@ -1114,7 +940,7 @@ mod tests {
                 },
             }],
         };
-        let translated = OpenAICompatibleProvider::translate_response(resp).unwrap();
+        let translated = OpenAICompatibleProvider::translate_response(resp, &test_registry()).unwrap();
         match translated {
             ProviderResponse::ToolCalls(calls) => {
                 assert_eq!(calls.len(), 1);
@@ -1158,7 +984,7 @@ mod tests {
                 },
             }],
         };
-        let translated = OpenAICompatibleProvider::translate_response(resp).unwrap();
+        let translated = OpenAICompatibleProvider::translate_response(resp, &test_registry()).unwrap();
         match translated {
             ProviderResponse::ToolCalls(calls) => match &calls[0].arguments {
                 AgentToolArgs::EditFile { replace_all, .. } => {
@@ -1189,7 +1015,7 @@ mod tests {
                 },
             }],
         };
-        let result = OpenAICompatibleProvider::translate_response(resp);
+        let result = OpenAICompatibleProvider::translate_response(resp, &test_registry());
         assert!(result.is_err());
     }
 
@@ -1212,7 +1038,7 @@ mod tests {
                 },
             }],
         };
-        let translated = OpenAICompatibleProvider::translate_response(resp).unwrap();
+        let translated = OpenAICompatibleProvider::translate_response(resp, &test_registry()).unwrap();
         match translated {
             ProviderResponse::ToolCalls(calls) => {
                 assert_eq!(calls.len(), 1);
@@ -1246,7 +1072,7 @@ mod tests {
                 },
             }],
         };
-        let result = OpenAICompatibleProvider::translate_response(resp);
+        let result = OpenAICompatibleProvider::translate_response(resp, &test_registry());
         assert!(result.is_err());
     }
 
