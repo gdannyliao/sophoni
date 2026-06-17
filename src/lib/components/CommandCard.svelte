@@ -78,7 +78,11 @@
   .exit-code.success { color: var(--success); }
   .exit-code.error { color: var(--danger); }
   .expand-arrow { color: var(--text-secondary); font-size: 11px; }
-  .command-output { padding: var(--space-2) var(--space-4); }
+  .command-output {
+    padding: var(--space-2) var(--space-4);
+    max-height: 400px;
+    overflow: auto;
+  }
   .output-section { margin-bottom: var(--space-2); }
   .output-label {
     font-size: 11px;

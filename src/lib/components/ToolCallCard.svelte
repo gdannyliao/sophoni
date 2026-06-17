@@ -70,7 +70,11 @@
     color: var(--text-secondary);
     font-size: 11px;
   }
-  .tool-output { padding: var(--space-2) var(--space-4); }
+  .tool-output {
+    padding: var(--space-2) var(--space-4);
+    max-height: 400px;
+    overflow: auto;
+  }
   pre {
     margin: 0;
     white-space: pre-wrap;
