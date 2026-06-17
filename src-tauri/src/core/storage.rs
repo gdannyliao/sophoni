@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
 use uuid::Uuid;
 
-use super::domain::{Conversation, ConversationMemory, ConversationSummary, ConversationTurn, Workspace};
+use super::domain::{Conversation, ConversationMemory, ConversationSummary, ConversationTurn, ScheduledTask, Workspace};
 use super::errors::AppResult;
 
 pub struct Storage {
@@ -89,6 +89,18 @@ impl Storage {
         );
         let _ = self.conn.execute(
             "ALTER TABLE conversations ADD COLUMN turns_json TEXT NOT NULL DEFAULT '[]'",
+            [],
+        );
+        let _ = self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS scheduled_tasks (
+                id TEXT PRIMARY KEY NOT NULL,
+                prompt TEXT NOT NULL,
+                hour INTEGER NOT NULL,
+                minute INTEGER NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                last_run_at TEXT,
+                created_at TEXT NOT NULL
+            )",
             [],
         );
         Ok(())
@@ -369,6 +381,82 @@ impl Storage {
         Ok(())
     }
 
+    // ── scheduled_tasks CRUD ──
+
+    pub fn create_scheduled_task(
+        &self,
+        prompt: &str,
+        hour: u32,
+        minute: u32,
+    ) -> AppResult<ScheduledTask> {
+        let id = Uuid::new_v4();
+        let now = Utc::now().to_rfc3339();
+        self.conn.execute(
+            "INSERT INTO scheduled_tasks (id, prompt, hour, minute, enabled, created_at) VALUES (?1, ?2, ?3, ?4, 1, ?5)",
+            params![id.to_string(), prompt, hour, minute, now],
+        )?;
+        Ok(ScheduledTask {
+            id,
+            prompt: prompt.to_string(),
+            hour,
+            minute,
+            enabled: true,
+            last_run_at: None,
+            created_at: now,
+        })
+    }
+
+    pub fn list_scheduled_tasks(&self) -> AppResult<Vec<ScheduledTask>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, prompt, hour, minute, enabled, last_run_at, created_at FROM scheduled_tasks ORDER BY hour, minute",
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut tasks = Vec::new();
+        while let Some(row) = rows.next()? {
+            let id_str: String = row.get(0)?;
+            tasks.push(ScheduledTask {
+                id: Uuid::parse_str(&id_str).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?,
+                prompt: row.get(1)?,
+                hour: row.get(2)?,
+                minute: row.get(3)?,
+                enabled: row.get::<_, i64>(4)? != 0,
+                last_run_at: row.get(5)?,
+                created_at: row.get(6)?,
+            });
+        }
+        Ok(tasks)
+    }
+
+    pub fn update_scheduled_task_enabled(&self, id: &Uuid, enabled: bool) -> AppResult<()> {
+        self.conn.execute(
+            "UPDATE scheduled_tasks SET enabled = ?1 WHERE id = ?2",
+            params![enabled as i64, id.to_string()],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_scheduled_task(&self, id: &Uuid) -> AppResult<()> {
+        self.conn.execute(
+            "DELETE FROM scheduled_tasks WHERE id = ?1",
+            params![id.to_string()],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_task_last_run(&self, id: &Uuid, time: &str) -> AppResult<()> {
+        self.conn.execute(
+            "UPDATE scheduled_tasks SET last_run_at = ?1 WHERE id = ?2",
+            params![time, id.to_string()],
+        )?;
+        Ok(())
+    }
+
     #[cfg(test)]
     pub fn foreign_keys_enabled(&self) -> AppResult<bool> {
         let enabled: i64 = self
@@ -602,5 +690,37 @@ mod tests {
         let ws1 = storage.get_or_create_workspace("/tmp/proj-a").unwrap();
         let ws2 = storage.get_or_create_workspace("/tmp/proj-a").unwrap();
         assert_eq!(ws1.id, ws2.id, "同一 path 应返回同一 workspace");
+    }
+
+    // ── scheduled_tasks 测试 ──
+
+    #[test]
+    fn scheduled_task_crud() {
+        let storage = Storage::open_in_memory().unwrap();
+        let task = storage
+            .create_scheduled_task("跑 pnpm accept", 9, 0)
+            .unwrap();
+        assert_eq!(task.hour, 9);
+        assert_eq!(task.minute, 0);
+        assert!(task.enabled);
+
+        let list = storage.list_scheduled_tasks().unwrap();
+        assert_eq!(list.len(), 1);
+
+        storage.update_scheduled_task_enabled(&task.id, false).unwrap();
+        let list = storage.list_scheduled_tasks().unwrap();
+        assert!(!list[0].enabled);
+
+        storage
+            .update_task_last_run(&task.id, "2026-06-18T09:00:00Z")
+            .unwrap();
+        let list = storage.list_scheduled_tasks().unwrap();
+        assert_eq!(
+            list[0].last_run_at.as_deref(),
+            Some("2026-06-18T09:00:00Z")
+        );
+
+        storage.delete_scheduled_task(&task.id).unwrap();
+        assert!(storage.list_scheduled_tasks().unwrap().is_empty());
     }
 }

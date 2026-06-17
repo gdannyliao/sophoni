@@ -1672,6 +1672,9 @@ pub fn wire_name(name: &AgentToolName) -> &'static str {
         AgentToolName::ListAcceptanceRuns => "list_acceptance_runs",
         AgentToolName::WebSearch => "web_search",
         AgentToolName::WebFetch => "web_fetch",
+        AgentToolName::CreateScheduledTask => "create_scheduled_task",
+        AgentToolName::ListScheduledTasks => "list_scheduled_tasks",
+        AgentToolName::DeleteScheduledTask => "delete_scheduled_task",
     }
 }
 
