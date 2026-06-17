@@ -11,7 +11,7 @@ use core::agent::{
 use core::command_risk::{classify_command, CommandRisk, RiskLevel};
 use core::domain::{
     AgentConfig, AgentEvent, ConfigStatus, Conversation, ConversationSummary, ConversationTurn,
-    SystemPrompt,
+    ScheduledTask, SystemPrompt,
 };
 use core::errors::AppError;
 use core::provider::OpenAICompatibleProvider;
@@ -19,7 +19,7 @@ use core::storage::Storage;
 use core::tools::ConfirmHandler;
 use core::tool_spec::{build_tool_registry, ToolRegistry};
 use core::workspace::WorkspaceFs;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{oneshot, Mutex};
 
 /// sophoni 的 SQLite 数据库路径（~/.config/sophoni/sophoni.db）。
@@ -35,6 +35,7 @@ struct AppState {
     storage: Arc<Mutex<Storage>>,
     server_state: core::server::ServerState,
     server_port: Arc<std::sync::atomic::AtomicU16>,
+    scheduler: Arc<Mutex<Option<Arc<core::scheduler::Scheduler>>>>,
 }
 
 struct AppEventSink {
@@ -449,6 +450,57 @@ async fn get_pair_qrcode(state: State<'_, AppState>) -> Result<PairQrCode, AppEr
     })
 }
 
+// ── 定时任务 IPC 命令（供前端 SchedulePanel 管理 UI 用）──
+
+#[tauri::command]
+async fn list_scheduled_tasks(state: State<'_, AppState>) -> Result<Vec<ScheduledTask>, AppError> {
+    let storage = state.storage.lock().await;
+    Ok(storage.list_scheduled_tasks()?)
+}
+
+#[tauri::command]
+async fn update_scheduled_task(
+    state: State<'_, AppState>,
+    id: String,
+    enabled: bool,
+) -> Result<(), AppError> {
+    let uuid = uuid::Uuid::parse_str(&id)
+        .map_err(|e| AppError::Config(format!("无效 ID: {e}")))?;
+    {
+        let storage = state.storage.lock().await;
+        storage.update_scheduled_task_enabled(&uuid, enabled)?;
+    }
+    // 通知 scheduler reload
+    let scheduler = state.scheduler.lock().await;
+    if let Some(sched) = scheduler.as_ref() {
+        let sched = sched.clone();
+        drop(scheduler);
+        sched.reload_task(uuid).await;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn delete_scheduled_task_cmd(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), AppError> {
+    let uuid = uuid::Uuid::parse_str(&id)
+        .map_err(|e| AppError::Config(format!("无效 ID: {e}")))?;
+    {
+        let storage = state.storage.lock().await;
+        storage.delete_scheduled_task(&uuid)?;
+    }
+    // 通知 scheduler stop
+    let scheduler = state.scheduler.lock().await;
+    if let Some(sched) = scheduler.as_ref() {
+        let sched = sched.clone();
+        drop(scheduler);
+        sched.stop_task(uuid).await;
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 初始化 tracing：默认 INFO 级别输出到 stderr，可用 RUST_LOG 环境变量覆盖
@@ -470,8 +522,8 @@ pub fn run() {
 
 #[cfg(not(mobile))]
 fn run_desktop() {
-    let db_path = db_path().expect("no HOME directory");
-    let storage = Storage::open(&db_path).expect("failed to open DB");
+    let db_path_val = db_path().expect("no HOME directory");
+    let storage = Storage::open(&db_path_val).expect("failed to open DB");
 
     let server_state = core::server::ServerState::new();
     let server_port: Arc<std::sync::atomic::AtomicU16> =
@@ -487,11 +539,64 @@ fn run_desktop() {
             storage: Arc::new(Mutex::new(storage)),
             server_state: server_state.clone(),
             server_port: server_port.clone(),
+            scheduler: Arc::new(Mutex::new(None)),
         })
         .setup({
             let server_state = server_state.clone();
             let server_port = server_port.clone();
-            move |_app| {
+            let db_path_for_scheduler = db_path().expect("no HOME directory");
+            move |app| {
+                // 构造 Scheduler（需要 AppHandle 做 fire 回调）
+                let app_handle = app.handle().clone();
+                let cancel = app_handle.state::<AppState>().inner().cancel.clone();
+                let fire_cancel = cancel.clone();
+                let fire_app = app_handle.clone();
+                let fire: core::scheduler::FireFn = Arc::new(move |prompt: String| {
+                    let cancel = fire_cancel.clone();
+                    let app = fire_app.clone();
+                    Box::pin(async move {
+                        let confirm: Arc<dyn core::tools::ConfirmHandler> =
+                            Arc::new(core::scheduler::AutoRejectConfirmHandler);
+                        let sink: Arc<dyn EventSink> =
+                            Arc::new(AppEventSink { app });
+                        run_agent_task_core(prompt, None, cancel, confirm, sink)
+                            .await
+                            .map(|_| ())
+                    })
+                });
+                let scheduler = Arc::new(core::scheduler::Scheduler::new(
+                    fire,
+                    db_path_for_scheduler.clone(),
+                ));
+
+                // 注入通知通道（让定时任务工具能 reload/stop）
+                let sched_for_reload = scheduler.clone();
+                let sched_for_stop = scheduler.clone();
+                core::tool_spec::init_scheduled_task_channels(
+                    Arc::new(move |task_id| {
+                        let s = sched_for_reload.clone();
+                        tauri::async_runtime::spawn(async move { s.reload_task(task_id).await; });
+                    }),
+                    Arc::new(move |task_id| {
+                        let s = sched_for_stop.clone();
+                        tauri::async_runtime::spawn(async move { s.stop_task(task_id).await; });
+                    }),
+                    db_path_for_scheduler.clone(),
+                );
+
+                // 启动调度
+                let sched_to_start = scheduler.clone();
+                tauri::async_runtime::spawn(async move {
+                    sched_to_start.start().await;
+                });
+
+                // 存入 AppState
+                {
+                    let state = app_handle.state::<AppState>();
+                    let mut s = state.scheduler.blocking_lock();
+                    *s = Some(scheduler);
+                }
+
                 let router = core::server::build_router(server_state);
                 // 用 tauri::async_runtime::spawn（而非裸 tokio::spawn），
                 // 因为 setup 闭包不在 async context，裸 tokio::spawn 会 panic（no reactor）。
@@ -525,6 +630,9 @@ fn run_desktop() {
             get_conversation,
             delete_conversation,
             get_pair_qrcode,
+            list_scheduled_tasks,
+            update_scheduled_task,
+            delete_scheduled_task_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
