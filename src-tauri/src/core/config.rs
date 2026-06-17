@@ -184,34 +184,7 @@ fn parse_search_config(content: &str) -> Option<super::web::SearchConfig> {
 }
 
 pub fn save_workspace_path(path: &str) -> AppResult<()> {
-    let config_path = config_path()?;
-    let content = if config_path.exists() {
-        fs::read_to_string(&config_path)?
-    } else {
-        String::new()
-    };
-
-    let mut lines: Vec<String> = content.lines().map(String::from).collect();
-    let mut found = false;
-    for line in lines.iter_mut() {
-        if line.trim_start().starts_with("workspace_path") {
-            *line = format!("workspace_path = \"{path}\"");
-            found = true;
-            break;
-        }
-    }
-    if !found {
-        lines.push(format!("workspace_path = \"{path}\""));
-    }
-
-    let new_content = lines.join("\n") + "\n";
-
-    if let Some(parent) = config_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(&config_path, new_content)?;
-    let _ = tighten_permissions(&config_path);
-    Ok(())
+    save_key_value("workspace_path", path)
 }
 
 fn parse_risk_level(content: &str) -> super::command_risk::RiskLevel {
@@ -231,45 +204,50 @@ fn parse_risk_level(content: &str) -> super::command_risk::RiskLevel {
 }
 
 pub fn save_risk_level(level: super::command_risk::RiskLevel) -> AppResult<()> {
-    let path = config_path()?;
-    let content = if path.exists() {
-        fs::read_to_string(&path)?
-    } else {
-        String::new()
-    };
-
     let level_str = match level {
         super::command_risk::RiskLevel::Standard => "standard",
         super::command_risk::RiskLevel::Relaxed => "relaxed",
         super::command_risk::RiskLevel::Unrestricted => "unrestricted",
     };
-
-    let mut lines: Vec<String> = content.lines().map(String::from).collect();
-    let mut found = false;
-    for line in lines.iter_mut() {
-        if line.trim_start().starts_with("risk_level") {
-            *line = format!("risk_level = \"{level_str}\"");
-            found = true;
-            break;
-        }
-    }
-    if !found {
-        lines.push(format!("risk_level = \"{level_str}\""));
-    }
-
-    let new_content = lines.join("\n") + "\n";
-
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(&path, new_content)?;
-    let _ = tighten_permissions(&path);
-    Ok(())
+    save_key_value("risk_level", level_str)
 }
 
 fn config_path() -> AppResult<PathBuf> {
     let home = dirs::home_dir().ok_or_else(|| AppError::Config("no HOME directory".into()))?;
     Ok(home.join(".config/sophoni/config.toml"))
+}
+
+/// 通用：在 config.toml 里写入/更新一个顶层 `key = "value"` 行。
+/// key 已存在则替换，不存在则追加。保留其他行和格式。
+fn save_key_value(key: &str, value: &str) -> AppResult<()> {
+    let config_path = config_path()?;
+    let content = if config_path.exists() {
+        fs::read_to_string(&config_path)?
+    } else {
+        String::new()
+    };
+
+    let mut lines: Vec<String> = content.lines().map(String::from).collect();
+    let mut found = false;
+    for line in lines.iter_mut() {
+        if line.trim_start().starts_with(key) {
+            *line = format!("{key} = \"{value}\"");
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        lines.push(format!("{key} = \"{value}\""));
+    }
+
+    let new_content = lines.join("\n") + "\n";
+
+    if let Some(parent) = config_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&config_path, new_content)?;
+    let _ = tighten_permissions(&config_path);
+    Ok(())
 }
 
 /// 保存 [search] 段到 config.toml。
