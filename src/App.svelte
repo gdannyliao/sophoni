@@ -4,6 +4,7 @@
   import Conversation from "./lib/components/Conversation.svelte";
   import ReviewView from "./lib/components/ReviewView.svelte";
   import SettingsPanel from "./lib/components/SettingsPanel.svelte";
+  import SchedulePanel from "./lib/components/SchedulePanel.svelte";
   import ConfirmDialog from "./lib/components/ConfirmDialog.svelte";
   import WelcomeView from "./lib/components/WelcomeView.svelte";
   import { open, confirm } from "@tauri-apps/plugin-dialog";
@@ -21,6 +22,7 @@
   let confirmUnlisten: UnlistenFn | null = null;
   let view: "main" | "review" = "main";
   let showSettings = false;
+  let showSchedule = false;
   let sidebarCollapsed = false;
   let pendingConfirm: CommandConfirmRequest | null = null;
   let workspacePath: string | null = null;
@@ -179,6 +181,7 @@
       collapsed={sidebarCollapsed}
       onToggleCollapse={() => (sidebarCollapsed = !sidebarCollapsed)}
       onOpenSettings={() => (showSettings = true)}
+      onOpenSchedule={() => (showSchedule = true)}
       {workspacePath}
       onSelectWorkspace={selectWorkspace}
       {conversations}
@@ -222,6 +225,20 @@
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <div class="overlay-content" role="dialog" aria-modal="true" tabindex="-1" on:click|stopPropagation>
       <SettingsPanel onClose={() => (showSettings = false)} />
+    </div>
+  </button>
+{/if}
+
+{#if showSchedule}
+  <button
+    type="button"
+    class="overlay"
+    aria-label="关闭定时任务"
+    on:click={() => (showSchedule = false)}
+  >
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <div class="overlay-content" role="dialog" aria-modal="true" tabindex="-1" on:click|stopPropagation>
+      <SchedulePanel onClose={() => (showSchedule = false)} />
     </div>
   </button>
 {/if}

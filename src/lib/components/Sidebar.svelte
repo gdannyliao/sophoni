@@ -6,6 +6,7 @@
   export let collapsed = false;
   export let onToggleCollapse: () => void = () => {};
   export let onOpenSettings: () => void = () => {};
+  export let onOpenSchedule: () => void = () => {};
   export let workspacePath: string | null = null;
   export let onSelectWorkspace: () => void = () => {};
   export let conversations: ConversationSummary[] = [];
@@ -55,6 +56,7 @@
     </div>
     <div class="sidebar-footer">
       <div class="model-info">{status?.model ?? "..."}</div>
+      <button class="btn sidebar-settings-btn" data-testid="schedule-button" on:click={onOpenSchedule}>⏰ 定时</button>
       <button class="btn sidebar-settings-btn" data-testid="settings-button" on:click={onOpenSettings}>⚙ 设置</button>
     </div>
   {:else}
