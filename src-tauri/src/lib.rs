@@ -354,6 +354,17 @@ pub fn run() {
         )
         .init();
 
+    // 桌面端：SQLite + HTTP 服务层 + 全部 IPC command。
+    // 移动端：瘦客户端壳，不初始化 SQLite/HTTP 服务（数据走 HTTP 到桌面端）。
+    // 两条路径各自 run()，避免 Builder 泛型类型不匹配问题。
+    #[cfg(not(mobile))]
+    run_desktop();
+    #[cfg(mobile)]
+    run_mobile();
+}
+
+#[cfg(not(mobile))]
+fn run_desktop() {
     let home = dirs::home_dir().expect("no HOME directory");
     let db_path = home.join(".config/sophoni/sophoni.db");
     let storage = Storage::open(&db_path).expect("failed to open DB");
@@ -405,6 +416,18 @@ pub fn run() {
             get_conversation,
             delete_conversation,
             get_pair_qrcode,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
+
+#[cfg(mobile)]
+fn run_mobile() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
+        .invoke_handler(tauri::generate_handler![
+            get_app_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

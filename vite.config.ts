@@ -3,7 +3,9 @@ import { svelte } from "@sveltejs/vite-plugin-svelte";
 
 const shared = {
   clearScreen: false,
-  server: { strictPort: true },
+  // host: "0.0.0.0" 让 Android 设备（Tauri Mobile dev）能访问电脑的 dev server。
+  // 桌面端 localhost 仍可用。strictPort 避免端口漂移导致 Tauri 连不上。
+  server: { host: "0.0.0.0", strictPort: true },
   envPrefix: ["VITE_", "TAURI_"],
 };
 
