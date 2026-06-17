@@ -67,7 +67,12 @@
 
   async function runDemo(task: string) {
     running = true;
-    events = [];
+    // 续聊（已有 activeConversationId）时保留历史 events，让连续消息累加显示在同一会话流里；
+    // 新会话才清空。streamingText/fileChanges 每轮重置。
+    const isNewConversation = activeConversationId === null;
+    if (isNewConversation) {
+      events = [];
+    }
     fileChanges = [];
     summary = "";
     streamingText = "";
@@ -88,17 +93,21 @@
           }
           if (e.kind === "conversation_created") {
             activeConversationId = e.body;
-            conversations = [{ id: e.body, title: e.body, updatedAt: new Date().toISOString() }, ...conversations];
+            // 新会话才往 sidebar 列表新增；复用会话时后端也会发此事件，靠 id 去重避免重复项
+            if (!conversations.some((c) => c.id === e.body)) {
+              conversations = [{ id: e.body, title: e.body, updatedAt: new Date().toISOString() }, ...conversations];
+            }
           }
           events = [...events, e];
         }
       });
       confirmUnlisten = await onCommandConfirm((req) => { pendingConfirm = req; });
-      const result = await runAgentTask(task);
+      const result = await runAgentTask(task, isNewConversation ? null : activeConversationId);
       fileChanges = result.fileChanges;
       summary = result.summary;
       streamingText = ""; // 任务结束，流式文本由 summary/事件定型
-      if (activeConversationId) {
+      // 仅新会话用本轮 summary 作标题；复用会话保留原标题（与后端 is_new 行为一致）
+      if (isNewConversation && activeConversationId) {
         conversations = conversations.map((c) =>
           c.id === activeConversationId
             ? { ...c, title: result.summary || c.title }
@@ -189,7 +198,6 @@
     {:else}
       <Conversation
         {events}
-        {summary}
         {streamingText}
         bind:prompt
         {running}

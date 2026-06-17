@@ -14,8 +14,8 @@ export async function runMockTask(workspaceRoot: string, prompt: string): Promis
   return invoke<AgentTaskResult>("run_mock_task", { workspaceRoot, prompt });
 }
 
-export async function runAgentTask(prompt: string): Promise<AgentTaskResult> {
-  return invoke<AgentTaskResult>("run_agent_task", { prompt });
+export async function runAgentTask(prompt: string, existingConversationId: string | null): Promise<AgentTaskResult> {
+  return invoke<AgentTaskResult>("run_agent_task", { prompt, existingConversationId });
 }
 
 export async function cancelAgentTask(): Promise<void> {
