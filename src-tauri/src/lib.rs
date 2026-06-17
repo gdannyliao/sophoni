@@ -19,6 +19,8 @@ struct AppState {
     cancel: Arc<AtomicBool>,
     confirm_pending: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>,
     storage: Arc<Mutex<Storage>>,
+    server_state: core::server::ServerState,
+    server_port: Arc<std::sync::atomic::AtomicU16>,
 }
 
 struct AppEventSink {
@@ -320,6 +322,28 @@ fn cancel_agent_task(state: State<'_, AppState>) {
     state.cancel.store(true, Ordering::Relaxed);
 }
 
+#[derive(serde::Serialize)]
+struct PairQrCode {
+    url: String,
+    svg: String,
+    ip: String,
+    port: u16,
+    code: String,
+}
+
+/// 获取配对二维码（供桌面 UI「手机连接」面板展示）。
+#[tauri::command]
+async fn get_pair_qrcode(state: State<'_, AppState>) -> Result<PairQrCode, AppError> {
+    let port = state.server_port.load(Ordering::Relaxed);
+    let ip = core::server::qrcode::local_ip()
+        .map(|ip| ip.to_string())
+        .unwrap_or_else(|| "127.0.0.1".into());
+    let code = state.server_state.current_pair_code().await;
+    let url = core::server::qrcode::build_pair_url(&ip, port, &code);
+    let svg = core::server::qrcode::render_qr_svg(&url);
+    Ok(PairQrCode { url, svg, ip, port, code })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 初始化 tracing：默认 INFO 级别输出到 stderr，可用 RUST_LOG 环境变量覆盖
@@ -334,6 +358,10 @@ pub fn run() {
     let db_path = home.join(".config/sophoni/sophoni.db");
     let storage = Storage::open(&db_path).expect("failed to open DB");
 
+    let server_state = core::server::ServerState::new();
+    let server_port: Arc<std::sync::atomic::AtomicU16> =
+        Arc::new(std::sync::atomic::AtomicU16::new(0));
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -341,6 +369,25 @@ pub fn run() {
             cancel: Arc::new(AtomicBool::new(false)),
             confirm_pending: Arc::new(Mutex::new(HashMap::new())),
             storage: Arc::new(Mutex::new(storage)),
+            server_state: server_state.clone(),
+            server_port: server_port.clone(),
+        })
+        .setup({
+            let server_state = server_state.clone();
+            let server_port = server_port.clone();
+            move |_app| {
+                let router = core::server::build_router(server_state);
+                tokio::spawn(async move {
+                    let listener = tokio::net::TcpListener::bind("0.0.0.0:0")
+                        .await
+                        .expect("server bind failed");
+                    let port = listener.local_addr().expect("no local addr").port();
+                    server_port.store(port, Ordering::Relaxed);
+                    tracing::info!(port, "server: HTTP 服务启动");
+                    axum::serve(listener, router).await.expect("server error");
+                });
+                Ok(())
+            }
         })
         .invoke_handler(tauri::generate_handler![
             get_app_status,
@@ -357,6 +404,7 @@ pub fn run() {
             list_conversations,
             get_conversation,
             delete_conversation,
+            get_pair_qrcode,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
