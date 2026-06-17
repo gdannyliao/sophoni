@@ -149,7 +149,7 @@
             activeConversationId = e.body;
             // 新会话才往 sidebar 列表新增；复用会话时后端也会发此事件，靠 id 去重避免重复项
             if (!conversations.some((c) => c.id === e.body)) {
-              conversations = [{ id: e.body, title: e.body, updatedAt: new Date().toISOString() }, ...conversations];
+              conversations = [{ id: e.body, title: e.body, updatedAt: new Date().toISOString(), workspacePath: workspacePath ?? "" }, ...conversations];
             }
           }
           events = [...events, e];
@@ -248,7 +248,7 @@
         {streamingText}
         bind:prompt
         {running}
-        workspacePath={workspacePath ?? "未选择工作区"}
+        workspacePath={conversations.find((c) => c.id === activeConversationId)?.workspacePath ?? workspacePath ?? "未选择工作区"}
         changeCount={fileChanges.length}
         title={conversations.find((c) => c.id === activeConversationId)?.title ?? ""}
         onRun={runDemo}

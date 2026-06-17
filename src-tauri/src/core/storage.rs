@@ -203,7 +203,11 @@ impl Storage {
         workspace_id: &Uuid,
     ) -> AppResult<Vec<ConversationSummary>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, title, updated_at FROM conversations WHERE workspace_id = ?1 ORDER BY updated_at DESC",
+            "SELECT c.id, c.title, c.updated_at, w.path
+             FROM conversations c
+             JOIN workspaces w ON c.workspace_id = w.id
+             WHERE c.workspace_id = ?1
+             ORDER BY c.updated_at DESC",
         )?;
         let mut rows = stmt.query(params![workspace_id.to_string()])?;
         let mut conversations = Vec::new();
@@ -224,6 +228,7 @@ impl Storage {
                         )
                     })?
                     .with_timezone(&Utc),
+                workspace_path: row.get(3)?,
             });
         }
         Ok(conversations)

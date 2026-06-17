@@ -40,6 +40,7 @@ export interface ConversationSummary {
   id: string;
   title: string;
   updatedAt: string;
+  workspacePath: string;
 }
 
 export interface WorkspaceGroup {
