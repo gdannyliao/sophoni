@@ -524,4 +524,54 @@ mod tests {
         let result = web_fetch(&client, "file:///etc/passwd", 8000).await;
         assert!(result.is_err());
     }
+
+    // ── 真实集成测试（默认 ignored，手动触发：--ignored）──
+    // 用 ~/.config/sophoni/config.toml 里配置的真实 key 跑全链路。
+    // 运行：cargo test --manifest-path src-tauri/Cargo.toml web::tests::real_ -- --ignored --nocapture
+
+    fn load_real_search_config() -> Option<SearchConfig> {
+        let home = dirs::home_dir()?;
+        let content = std::fs::read_to_string(home.join(".config/sophoni/config.toml")).ok()?;
+        #[derive(serde::Deserialize)]
+        struct Cfg {
+            #[serde(default)]
+            search: Option<SearchConfig>,
+        }
+        let cfg: Cfg = toml::from_str(&content).ok()?;
+        cfg.search
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn real_tavily_search_returns_results() {
+        let config = load_real_search_config().expect("需配置 [search] 段");
+        let backend = select_backend(&config).expect("需配置可用后端");
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .unwrap();
+        let results = backend
+            .search(&client, "rust tokio timeout", 3)
+            .await
+            .expect("搜索应成功");
+        assert!(!results.is_empty(), "应返回结果");
+        let formatted = format_results(&results);
+        println!("\n=== web_search 结果 ===\n{formatted}\n");
+        assert!(formatted.contains("[1]"));
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn real_web_fetch_returns_text() {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .unwrap();
+        // example.com 是稳定的公网页面，适合做基准测试
+        let text = web_fetch(&client, "https://example.com", 2000)
+            .await
+            .expect("抓取应成功");
+        println!("\n=== web_fetch 结果 ===\n{text}\n");
+        assert!(text.to_lowercase().contains("example"));
+    }
 }
