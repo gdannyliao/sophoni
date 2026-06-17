@@ -1591,6 +1591,264 @@ pub fn find_tool<'a>(registry: &'a ToolRegistry, name: &str) -> Option<&'a dyn T
     registry.iter().find(|t| t.name() == name).map(|b| &**b)
 }
 
+// ── 定时任务工具的通知通道 ──
+// 工具不能直接持有 Scheduler（循环依赖），通过全局回调通知。
+
+static SCHEDULER_RELOAD: std::sync::OnceLock<Arc<dyn Fn(uuid::Uuid) + Send + Sync>> = std::sync::OnceLock::new();
+static SCHEDULER_STOP: std::sync::OnceLock<Arc<dyn Fn(uuid::Uuid) + Send + Sync>> = std::sync::OnceLock::new();
+static TASK_DB_PATH: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// 由 lib.rs 在启动时注入：scheduler reload/stop 回调 + DB 路径。
+pub fn init_scheduled_task_channels(
+    reload: Arc<dyn Fn(uuid::Uuid) + Send + Sync>,
+    stop: Arc<dyn Fn(uuid::Uuid) + Send + Sync>,
+    db_path: std::path::PathBuf,
+) {
+    let _ = SCHEDULER_RELOAD.set(reload);
+    let _ = SCHEDULER_STOP.set(stop);
+    let _ = TASK_DB_PATH.set(db_path);
+}
+
+fn open_task_storage() -> AppResult<super::storage::Storage> {
+    let path = TASK_DB_PATH
+        .get()
+        .ok_or_else(|| AppError::Tool("定时任务 DB 路径未初始化".into()))?;
+    super::storage::Storage::open(path)
+}
+
+// ── create_scheduled_task ──
+
+pub struct CreateScheduledTaskTool;
+
+impl ToolSpec for CreateScheduledTaskTool {
+    fn name(&self) -> &'static str {
+        "create_scheduled_task"
+    }
+    fn schema(&self) -> AgentToolSchema {
+        AgentToolSchema {
+            name: "create_scheduled_task",
+            description: "创建定时任务。到指定时间自动创建新会话并用 prompt 跑一遍 agent。用户说'每天 X 点做 Y'时用此工具。".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "prompt": { "type": "string", "description": "到点要执行的 prompt" },
+                    "hour": { "type": "integer", "minimum": 0, "maximum": 23, "description": "小时（0-23）" },
+                    "minute": { "type": "integer", "minimum": 0, "maximum": 59, "description": "分钟（0-59）" }
+                },
+                "required": ["prompt", "hour", "minute"]
+            }),
+        }
+    }
+    fn serialize_args(&self, args: &AgentToolArgs) -> serde_json::Value {
+        match args {
+            AgentToolArgs::CreateScheduledTask { prompt, hour, minute } => {
+                serde_json::json!({ "prompt": prompt, "hour": hour, "minute": minute })
+            }
+            _ => unreachable!(),
+        }
+    }
+    fn parse(&self, id: &str, args: &serde_json::Value) -> AppResult<AgentToolCall> {
+        let prompt = req_str(args, "prompt", "create_scheduled_task")?;
+        let hour = args.get("hour").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        let minute = args.get("minute").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        Ok(AgentToolCall {
+            id: id.to_string(),
+            name: AgentToolName::CreateScheduledTask,
+            arguments: AgentToolArgs::CreateScheduledTask { prompt, hour, minute },
+        })
+    }
+    fn describe(&self, args: &AgentToolArgs) -> (String, String) {
+        match args {
+            AgentToolArgs::CreateScheduledTask { prompt, hour, minute } => (
+                format!("create_scheduled_task: 每天 {:02}:{:02}", hour, minute),
+                format!("prompt: {prompt}\nhour: {hour}\nminute: {minute}"),
+            ),
+            _ => unreachable!(),
+        }
+    }
+    fn dispatch(&self, call: &AgentToolCall) -> ToolFuture {
+        let call_id = call.id.clone();
+        let (prompt, hour, minute) = match &call.arguments {
+            AgentToolArgs::CreateScheduledTask { prompt, hour, minute } => {
+                (prompt.clone(), *hour, *minute)
+            }
+            _ => return Box::pin(async move { Ok(tool_error(&call_id, "参数不匹配")) }),
+        };
+        Box::pin(async move {
+            let storage = match open_task_storage() {
+                Ok(s) => s,
+                Err(e) => return Ok(tool_error(&call_id, &format!("DB 打开失败: {e}"))),
+            };
+            let task = match storage.create_scheduled_task(&prompt, hour, minute) {
+                Ok(t) => t,
+                Err(e) => return Ok(tool_error(&call_id, &format!("创建失败: {e}"))),
+            };
+            // 通知 scheduler reload
+            if let Some(f) = SCHEDULER_RELOAD.get() {
+                f(task.id);
+            }
+            Ok(AgentToolResult {
+                tool_call_id: call_id,
+                content: format!(
+                    "已创建定时任务：每天 {:02}:{:02} 执行「{}」\nID: {}",
+                    hour, minute, prompt, task.id
+                ),
+                is_error: false,
+                file_change: None,
+            })
+        })
+    }
+    fn available_in_chat_only(&self) -> bool {
+        true
+    }
+}
+
+// ── list_scheduled_tasks ──
+
+pub struct ListScheduledTasksTool;
+
+impl ToolSpec for ListScheduledTasksTool {
+    fn name(&self) -> &'static str {
+        "list_scheduled_tasks"
+    }
+    fn schema(&self) -> AgentToolSchema {
+        AgentToolSchema {
+            name: "list_scheduled_tasks",
+            description: "列出所有定时任务。用户问'我有哪些定时任务'时用此工具。".into(),
+            parameters: serde_json::json!({ "type": "object", "properties": {} }),
+        }
+    }
+    fn serialize_args(&self, _args: &AgentToolArgs) -> serde_json::Value {
+        serde_json::json!({})
+    }
+    fn parse(&self, id: &str, _args: &serde_json::Value) -> AppResult<AgentToolCall> {
+        Ok(AgentToolCall {
+            id: id.to_string(),
+            name: AgentToolName::ListScheduledTasks,
+            arguments: AgentToolArgs::ListScheduledTasks {},
+        })
+    }
+    fn describe(&self, _args: &AgentToolArgs) -> (String, String) {
+        ("list_scheduled_tasks".into(), "列出所有定时任务".into())
+    }
+    fn dispatch(&self, call: &AgentToolCall) -> ToolFuture {
+        let call_id = call.id.clone();
+        Box::pin(async move {
+            let storage = match open_task_storage() {
+                Ok(s) => s,
+                Err(e) => return Ok(tool_error(&call_id, &format!("DB 打开失败: {e}"))),
+            };
+            let tasks = match storage.list_scheduled_tasks() {
+                Ok(t) => t,
+                Err(e) => return Ok(tool_error(&call_id, &format!("查询失败: {e}"))),
+            };
+            let content = if tasks.is_empty() {
+                "（无定时任务）".to_string()
+            } else {
+                tasks
+                    .iter()
+                    .map(|t| {
+                        let status = if t.enabled { "启用" } else { "暂停" };
+                        format!(
+                            "每天 {:02}:{:02} · {} [{}] (ID: {})",
+                            t.hour, t.minute, t.prompt, status, t.id
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            Ok(AgentToolResult {
+                tool_call_id: call_id,
+                content,
+                is_error: false,
+                file_change: None,
+            })
+        })
+    }
+    fn available_in_chat_only(&self) -> bool {
+        true
+    }
+}
+
+// ── delete_scheduled_task ──
+
+pub struct DeleteScheduledTaskTool;
+
+impl ToolSpec for DeleteScheduledTaskTool {
+    fn name(&self) -> &'static str {
+        "delete_scheduled_task"
+    }
+    fn schema(&self) -> AgentToolSchema {
+        AgentToolSchema {
+            name: "delete_scheduled_task",
+            description: "删除定时任务。用户说'取消每天 X 点的任务'时用此工具。需先用 list_scheduled_tasks 获取 id。".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "任务 ID（从 list_scheduled_tasks 获取）" }
+                },
+                "required": ["id"]
+            }),
+        }
+    }
+    fn serialize_args(&self, args: &AgentToolArgs) -> serde_json::Value {
+        match args {
+            AgentToolArgs::DeleteScheduledTask { id } => serde_json::json!({ "id": id }),
+            _ => unreachable!(),
+        }
+    }
+    fn parse(&self, id: &str, args: &serde_json::Value) -> AppResult<AgentToolCall> {
+        let task_id = req_str(args, "id", "delete_scheduled_task")?;
+        Ok(AgentToolCall {
+            id: id.to_string(),
+            name: AgentToolName::DeleteScheduledTask,
+            arguments: AgentToolArgs::DeleteScheduledTask { id: task_id },
+        })
+    }
+    fn describe(&self, args: &AgentToolArgs) -> (String, String) {
+        match args {
+            AgentToolArgs::DeleteScheduledTask { id } => {
+                ("delete_scheduled_task".into(), format!("id: {id}"))
+            }
+            _ => unreachable!(),
+        }
+    }
+    fn dispatch(&self, call: &AgentToolCall) -> ToolFuture {
+        let call_id = call.id.clone();
+        let task_id_str = match &call.arguments {
+            AgentToolArgs::DeleteScheduledTask { id } => id.clone(),
+            _ => return Box::pin(async move { Ok(tool_error(&call_id, "参数不匹配")) }),
+        };
+        Box::pin(async move {
+            let uuid = match uuid::Uuid::parse_str(&task_id_str) {
+                Ok(u) => u,
+                Err(_) => return Ok(tool_error(&call_id, "无效的任务 ID")),
+            };
+            let storage = match open_task_storage() {
+                Ok(s) => s,
+                Err(e) => return Ok(tool_error(&call_id, &format!("DB 打开失败: {e}"))),
+            };
+            match storage.delete_scheduled_task(&uuid) {
+                Ok(()) => {
+                    if let Some(f) = SCHEDULER_STOP.get() {
+                        f(uuid);
+                    }
+                    Ok(AgentToolResult {
+                        tool_call_id: call_id,
+                        content: "已删除定时任务".into(),
+                        is_error: false,
+                        file_change: None,
+                    })
+                }
+                Err(e) => Ok(tool_error(&call_id, &format!("删除失败: {e}"))),
+            }
+        })
+    }
+    fn available_in_chat_only(&self) -> bool {
+        true
+    }
+}
+
 /// 构造全部 13 个工具的 registry。每次请求构造（fs / confirm_handler 是会话级依赖）。
 #[allow(clippy::too_many_arguments)]
 pub fn build_tool_registry(
@@ -1617,6 +1875,9 @@ pub fn build_tool_registry(
             http_client: http_client.clone(),
         }),
         Box::new(WebFetchTool { http_client }),
+        Box::new(CreateScheduledTaskTool),
+        Box::new(ListScheduledTasksTool),
+        Box::new(DeleteScheduledTaskTool),
     ]
 }
 
