@@ -4,6 +4,7 @@
   import Conversation from "./lib/components/Conversation.svelte";
   import ReviewView from "./lib/components/ReviewView.svelte";
   import SettingsPanel from "./lib/components/SettingsPanel.svelte";
+  import MobilePairPanel from "./lib/components/MobilePairPanel.svelte";
   import ConfirmDialog from "./lib/components/ConfirmDialog.svelte";
   import WelcomeView from "./lib/components/WelcomeView.svelte";
   import { open, confirm } from "@tauri-apps/plugin-dialog";
@@ -21,6 +22,7 @@
   let confirmUnlisten: UnlistenFn | null = null;
   let view: "main" | "review" = "main";
   let showSettings = false;
+  let showMobilePair = false;
   let sidebarCollapsed = false;
   let pendingConfirm: CommandConfirmRequest | null = null;
   let workspacePath: string | null = null;
@@ -227,6 +229,7 @@
       collapsed={sidebarCollapsed}
       onToggleCollapse={() => (sidebarCollapsed = !sidebarCollapsed)}
       onOpenSettings={() => (showSettings = true)}
+      onOpenMobilePair={() => (showMobilePair = true)}
       {groups}
       {activeConversationId}
       onSelectConversation={selectConversation}
@@ -271,6 +274,10 @@
       <SettingsPanel onClose={() => (showSettings = false)} />
     </div>
   </button>
+{/if}
+
+{#if showMobilePair}
+  <MobilePairPanel onClose={() => (showMobilePair = false)} />
 {/if}
 
 {#if pendingConfirm}

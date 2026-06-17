@@ -6,6 +6,7 @@
   export let collapsed = false;
   export let onToggleCollapse: () => void = () => {};
   export let onOpenSettings: () => void = () => {};
+  export let onOpenMobilePair: () => void = () => {};
   export let groups: WorkspaceGroup[] = [];
   export let activeConversationId: string | null = null;
   export let onSelectConversation: (id: string) => void = () => {};
@@ -60,7 +61,10 @@
     </div>
     <div class="sidebar-footer">
       <div class="model-info">{status?.model ?? "..."}</div>
-      <button class="btn sidebar-settings-btn" data-testid="settings-button" on:click={onOpenSettings}>⚙ 设置</button>
+      <div class="footer-actions">
+        <button class="btn icon-footer-btn" data-testid="settings-button" on:click={onOpenSettings} title="设置">⚙</button>
+        <button class="btn icon-footer-btn" data-testid="mobile-pair-button" on:click={onOpenMobilePair} title="手机连接">📱</button>
+      </div>
     </div>
   {:else}
     <div class="sidebar-collapsed-content">
@@ -137,7 +141,19 @@
     font-size: 12px;
   }
   .model-info { font-size: 11px; color: var(--text-secondary); margin-bottom: var(--space-2); }
-  .sidebar-settings-btn { width: 100%; text-align: left; }
+  .footer-actions { display: flex; gap: var(--space-2); }
+  .icon-footer-btn {
+    flex: 1;
+    padding: var(--space-2);
+    font-size: 16px;
+    text-align: center;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--bg-primary);
+    color: var(--text-secondary);
+    cursor: pointer;
+  }
+  .icon-footer-btn:hover { background: var(--bg-tertiary); color: var(--text-primary); }
   .icon-btn {
     border: 0;
     background: transparent;
