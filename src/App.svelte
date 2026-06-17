@@ -40,12 +40,50 @@
   /** 加载所有工作区分组会话，并拍平出 conversations 给 WelcomeView 用。 */
   async function refreshGroups() {
     try {
-      groups = await listConversationsGrouped();
+      const raw = await listConversationsGrouped();
+      groups = mergeSubdirWorkspaces(raw);
       conversations = groups.flatMap((g) => g.conversations);
     } catch {
       groups = [];
       conversations = [];
     }
+  }
+
+  /**
+   * 把子目录工作区归并到父目录工作区（UI 层归并，不改数据）。
+   * 例：/a/b/deploy 的会话合并进 /a/b（若 /a/b 也存在工作区）。
+   * 规则：路径按长度从长到短排序，每个工作区找是否存在更短的父路径工作区；
+   * 存在则把会话并入父，自身不单独成组。归并后按 updatedAt 倒序重排各组会话。
+   */
+  function mergeSubdirWorkspaces(raw: WorkspaceGroup[]): WorkspaceGroup[] {
+    // 规范化：去尾斜杠，保证父子判定用统一前缀（/a/b 而非 /a/b/）
+    const norm = (p: string) => p.replace(/\/+$/, "");
+    const isSubdir = (child: string, parent: string) => {
+      const c = norm(child);
+      const p = norm(parent);
+      return c !== p && c.startsWith(p + "/");
+    };
+
+    // 按路径长度从长到短排序：子目录在前，父目录在后
+    const sorted = [...raw].sort(
+      (a, b) => norm(b.path).length - norm(a.path).length,
+    );
+
+    const merged = new Map<string, WorkspaceGroup>();
+    for (const g of sorted) {
+      // 找最短的父路径工作区（已在上游处理过的），归并过去
+      const parentKey = [...merged.keys()].find((k) => isSubdir(g.path, k));
+      if (parentKey !== undefined) {
+        const parent = merged.get(parentKey)!;
+        parent.conversations = [...parent.conversations, ...g.conversations].sort(
+          (a, b) => b.updatedAt.localeCompare(a.updatedAt),
+        );
+      } else {
+        merged.set(norm(g.path), { ...g, path: norm(g.path) });
+      }
+    }
+
+    return [...merged.values()];
   }
 
   async function selectWorkspace() {
