@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AgentEvent, AgentTaskResult, CommandConfirmRequest, CommandRisk, ConfigStatus, Conversation, ConversationSummary, RiskLevel, SearchConfig } from "./types";
+import type { AgentEvent, AgentTaskResult, CommandConfirmRequest, CommandRisk, ConfigStatus, Conversation, ConversationSummary, RiskLevel, SearchConfig, WorkspaceGroup } from "./types";
 
 export async function getAppStatus(): Promise<string> {
   return invoke<string>("get_app_status");
@@ -56,6 +56,11 @@ export async function setWorkspacePath(path: string): Promise<void> {
 
 export async function listConversations(): Promise<ConversationSummary[]> {
   return invoke<ConversationSummary[]>("list_conversations");
+}
+
+/** 列出所有工作区及其会话（按工作区分组，Sidebar 多工作区视图用）。 */
+export async function listConversationsGrouped(): Promise<WorkspaceGroup[]> {
+  return invoke<WorkspaceGroup[]>("list_conversations_grouped");
 }
 
 export async function getConversation(id: string): Promise<Conversation> {

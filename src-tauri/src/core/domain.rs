@@ -60,6 +60,16 @@ pub struct ConversationSummary {
     pub updated_at: DateTime<Utc>,
 }
 
+/// 工作区及其会话列表（Sidebar 分组渲染用）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceGroup {
+    pub id: Uuid,
+    pub name: String,
+    pub path: String,
+    pub conversations: Vec<ConversationSummary>,
+}
+
 
 #[derive(Debug, Clone)]
 pub struct ConversationMemory {

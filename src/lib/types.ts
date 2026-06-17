@@ -42,6 +42,13 @@ export interface ConversationSummary {
   updatedAt: string;
 }
 
+export interface WorkspaceGroup {
+  id: string;
+  name: string;
+  path: string;
+  conversations: ConversationSummary[];
+}
+
 export interface Conversation extends ConversationSummary {
   eventsJson: string;
 }

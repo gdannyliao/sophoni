@@ -7,9 +7,9 @@
   import ConfirmDialog from "./lib/components/ConfirmDialog.svelte";
   import WelcomeView from "./lib/components/WelcomeView.svelte";
   import { open, confirm } from "@tauri-apps/plugin-dialog";
-  import { runAgentTask, cancelAgentTask, onAgentEvent, onCommandConfirm, resolveCommandConfirm, getWorkspacePath, setWorkspacePath, listConversations, getConversation, deleteConversation } from "./lib/api";
+  import { runAgentTask, cancelAgentTask, onAgentEvent, onCommandConfirm, resolveCommandConfirm, getWorkspacePath, setWorkspacePath, listConversationsGrouped, getConversation, deleteConversation } from "./lib/api";
   import type { UnlistenFn } from "@tauri-apps/api/event";
-  import type { AgentEvent, CommandConfirmRequest, ConversationSummary, FileChange } from "./lib/types";
+  import type { AgentEvent, CommandConfirmRequest, ConversationSummary, FileChange, WorkspaceGroup } from "./lib/types";
 
   let events: AgentEvent[] = [];
   let fileChanges: FileChange[] = [];
@@ -24,26 +24,36 @@
   let sidebarCollapsed = false;
   let pendingConfirm: CommandConfirmRequest | null = null;
   let workspacePath: string | null = null;
+  let groups: WorkspaceGroup[] = [];
   let conversations: ConversationSummary[] = [];
   let activeConversationId: string | null = null;
 
   onMount(async () => {
     try {
       workspacePath = await getWorkspacePath();
-      if (workspacePath) {
-        conversations = await listConversations();
-      }
     } catch {
       workspacePath = null;
     }
+    await refreshGroups();
   });
+
+  /** 加载所有工作区分组会话，并拍平出 conversations 给 WelcomeView 用。 */
+  async function refreshGroups() {
+    try {
+      groups = await listConversationsGrouped();
+      conversations = groups.flatMap((g) => g.conversations);
+    } catch {
+      groups = [];
+      conversations = [];
+    }
+  }
 
   async function selectWorkspace() {
     const selected = await open({ directory: true, multiple: false });
     if (typeof selected === "string") {
       await setWorkspacePath(selected);
       workspacePath = selected;
-      conversations = await listConversations();
+      await refreshGroups();
     }
   }
 
@@ -111,14 +121,8 @@
       fileChanges = result.fileChanges;
       summary = result.summary;
       streamingText = ""; // 任务结束，流式文本由 summary/事件定型
-      // 仅新会话用本轮 summary 作标题；复用会话保留原标题（与后端 is_new 行为一致）
-      if (isNewConversation && activeConversationId) {
-        conversations = conversations.map((c) =>
-          c.id === activeConversationId
-            ? { ...c, title: result.summary || c.title }
-            : c
-        );
-      }
+      // 任务结束后刷新分组数据，同步 Sidebar（新会话归入工作区、标题更新）
+      await refreshGroups();
     } catch (e) {
       events = [...events, { kind: "error", title: "调用失败", body: String(e), toolCallId: undefined }];
     } finally {
@@ -166,7 +170,7 @@
     if (!confirmed) return;
     try {
       await deleteConversation(id);
-      conversations = conversations.filter((c) => c.id !== id);
+      await refreshGroups();
       if (activeConversationId === id) {
         newConversation();
       }
@@ -184,7 +188,7 @@
       collapsed={sidebarCollapsed}
       onToggleCollapse={() => (sidebarCollapsed = !sidebarCollapsed)}
       onOpenSettings={() => (showSettings = true)}
-      {conversations}
+      {groups}
       {activeConversationId}
       onSelectConversation={selectConversation}
       onNewConversation={newConversation}

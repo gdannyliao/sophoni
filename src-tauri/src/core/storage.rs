@@ -229,6 +229,24 @@ impl Storage {
         Ok(conversations)
     }
 
+    /// 列出所有工作区及其会话（按工作区分组，Sidebar 多工作区视图用）。
+    /// 工作区按 last_opened_at 倒序，每个工作区内会话按 updated_at 倒序。
+    pub fn list_conversations_grouped(&self) -> AppResult<Vec<super::domain::WorkspaceGroup>> {
+        use super::domain::WorkspaceGroup;
+        let workspaces = self.list_workspaces()?;
+        let mut groups = Vec::with_capacity(workspaces.len());
+        for ws in workspaces {
+            let conversations = self.list_conversations(&ws.id)?;
+            groups.push(WorkspaceGroup {
+                id: ws.id,
+                name: ws.name,
+                path: ws.path,
+                conversations,
+            });
+        }
+        Ok(groups)
+    }
+
     pub fn get_conversation(&self, id: &Uuid) -> AppResult<Conversation> {
         self.conn
             .query_row(
