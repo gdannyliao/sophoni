@@ -1,12 +1,14 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { getConfigStatus, getRiskLevel, setRiskLevel } from "../api";
-  import type { ConfigStatus, RiskLevel } from "../types";
+  import { getConfigStatus, getRiskLevel, setRiskLevel, getSearchConfig, saveSearchConfig } from "../api";
+  import type { ConfigStatus, RiskLevel, SearchConfig } from "../types";
 
   export let onClose: () => void = () => {};
 
   let status: ConfigStatus | null = null;
   let riskLevel: RiskLevel = "standard";
+  let searchConfig: SearchConfig = { tavilyKey: null, googleKey: null, googleCx: null };
+  let searchSaved = false;
 
   onMount(async () => {
     try {
@@ -19,12 +21,28 @@
     } catch {
       // 默认 standard
     }
+    try {
+      const sc = await getSearchConfig();
+      searchConfig = sc ?? { tavilyKey: null, googleKey: null, googleCx: null };
+    } catch {
+      // 未配置时保持默认空值
+    }
   });
 
   async function onRiskLevelChange(e: Event) {
     const target = e.target as HTMLInputElement;
     riskLevel = target.value as RiskLevel;
     await setRiskLevel(riskLevel);
+  }
+
+  async function onSaveSearch() {
+    try {
+      await saveSearchConfig(searchConfig);
+      searchSaved = true;
+      setTimeout(() => (searchSaved = false), 2000);
+    } catch {
+      // 静默失败，避免阻塞 UI
+    }
   }
 </script>
 
@@ -71,6 +89,28 @@
         <span>完全访问</span>
       </label>
     </div>
+
+    <div class="settings-row" style="margin-top: 16px;">
+      <span class="label">网络搜索</span>
+    </div>
+    <p class="hint">配置后 agent 可用 web_search 搜索网络、web_fetch 读取网页。至少配一个即可。</p>
+    <div class="search-config" data-testid="search-config">
+      <label class="search-field">
+        <span class="field-label">Tavily API Key</span>
+        <input type="password" data-testid="search-tavily-key" bind:value={searchConfig.tavilyKey} placeholder="tvly-..." />
+      </label>
+      <label class="search-field">
+        <span class="field-label">Google API Key</span>
+        <input type="password" data-testid="search-google-key" bind:value={searchConfig.googleKey} placeholder="（可选）" />
+      </label>
+      <label class="search-field">
+        <span class="field-label">Google 搜索引擎 ID (CX)</span>
+        <input type="text" data-testid="search-google-cx" bind:value={searchConfig.googleCx} placeholder="（可选，配 Google 时需要）" />
+      </label>
+      <button class="btn btn-primary" data-testid="search-save" on:click={onSaveSearch}>
+        {searchSaved ? "已保存" : "保存搜索配置"}
+      </button>
+    </div>
   </div>
 </div>
 
@@ -115,5 +155,27 @@
     gap: var(--space-2);
     font-size: 13px;
     cursor: pointer;
+  }
+  .search-config {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: var(--space-2) 0;
+  }
+  .search-field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    font-size: 13px;
+  }
+  .field-label { color: var(--text-secondary); font-size: 12px; }
+  .search-field input {
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: var(--space-2) var(--space-3);
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 12px;
   }
 </style>

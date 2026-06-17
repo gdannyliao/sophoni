@@ -45,3 +45,9 @@ export interface ConversationSummary {
 export interface Conversation extends ConversationSummary {
   eventsJson: string;
 }
+
+export interface SearchConfig {
+  tavilyKey: string | null;
+  googleKey: string | null;
+  googleCx: string | null;
+}

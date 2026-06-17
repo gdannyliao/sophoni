@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AgentEvent, AgentTaskResult, CommandConfirmRequest, CommandRisk, ConfigStatus, Conversation, ConversationSummary, RiskLevel } from "./types";
+import type { AgentEvent, AgentTaskResult, CommandConfirmRequest, CommandRisk, ConfigStatus, Conversation, ConversationSummary, RiskLevel, SearchConfig } from "./types";
 
 export async function getAppStatus(): Promise<string> {
   return invoke<string>("get_app_status");
@@ -64,4 +64,16 @@ export async function getConversation(id: string): Promise<Conversation> {
 
 export async function deleteConversation(id: string): Promise<void> {
   await invoke("delete_conversation", { id });
+}
+
+export async function getSearchConfig(): Promise<SearchConfig> {
+  return invoke<SearchConfig>("get_search_config");
+}
+
+export async function saveSearchConfig(config: SearchConfig): Promise<void> {
+  await invoke("save_search_config", {
+    tavilyKey: config.tavilyKey,
+    googleKey: config.googleKey,
+    googleCx: config.googleCx,
+  });
 }
