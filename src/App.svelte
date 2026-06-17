@@ -184,8 +184,6 @@
       collapsed={sidebarCollapsed}
       onToggleCollapse={() => (sidebarCollapsed = !sidebarCollapsed)}
       onOpenSettings={() => (showSettings = true)}
-      {workspacePath}
-      onSelectWorkspace={selectWorkspace}
       {conversations}
       {activeConversationId}
       onSelectConversation={selectConversation}

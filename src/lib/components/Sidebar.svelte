@@ -6,8 +6,6 @@
   export let collapsed = false;
   export let onToggleCollapse: () => void = () => {};
   export let onOpenSettings: () => void = () => {};
-  export let workspacePath: string | null = null;
-  export let onSelectWorkspace: () => void = () => {};
   export let conversations: ConversationSummary[] = [];
   export let activeConversationId: string | null = null;
   export let onSelectConversation: (id: string) => void = () => {};
@@ -46,12 +44,6 @@
       {:else}
         <div class="session-empty">暂无会话</div>
       {/each}
-    </div>
-    <div class="workspace-section">
-      {#if !workspacePath}
-        <div class="workspace-empty">未选择工作区</div>
-        <button class="btn workspace-btn" data-testid="workspace-open" on:click={onSelectWorkspace}>📁 打开工作区</button>
-      {/if}
     </div>
     <div class="sidebar-footer">
       <div class="model-info">{status?.model ?? "..."}</div>
@@ -125,29 +117,6 @@
     padding: var(--space-2) var(--space-3);
     color: var(--text-secondary);
     font-size: 12px;
-  }
-  .workspace-section {
-    padding: var(--space-3);
-    border-top: 1px solid var(--border);
-  }
-  .workspace-path {
-    font-size: 12px;
-    font-family: var(--font-mono);
-    color: var(--text-secondary);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    margin-bottom: var(--space-2);
-  }
-  .workspace-empty {
-    font-size: 12px;
-    color: var(--text-secondary);
-    margin-bottom: var(--space-2);
-  }
-  .workspace-btn { width: 100%; }
-  .sidebar-footer {
-    padding: var(--space-3);
-    border-top: 1px solid var(--border);
   }
   .model-info { font-size: 11px; color: var(--text-secondary); margin-bottom: var(--space-2); }
   .sidebar-settings-btn { width: 100%; text-align: left; }
