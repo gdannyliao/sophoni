@@ -90,6 +90,9 @@ fn system_prompt(
 - read_runtime_log：读取验收运行日志的尾部内容，可不传 run_id 读取最新一次。
 - web_search：搜索网络。遇到未知报错、陌生 API、不确定的用法时，先搜索而不是猜。
 - web_fetch：读取网页内容。web_search 找到线索后，用它读取详情。
+- create_scheduled_task：创建定时任务。用户说"每天 X 点做 Y"时，提取时间（hour/minute）和任务（prompt）创建。
+- list_scheduled_tasks：列出所有定时任务。
+- delete_scheduled_task：删除定时任务（需先 list 获取 id）。
 
 工作方式：
 1. 不确定路径时，先 list_files 或 grep 探索。
