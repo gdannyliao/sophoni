@@ -1,14 +1,26 @@
 use axum::{
     extract::{Path, State},
     http::StatusCode,
+    response::sse::{Event, Sse},
     Json,
 };
 use serde::Deserialize;
+use std::convert::Infallible;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::collections::HashMap;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::StreamExt;
 
+use crate::core::agent::EventSink;
 use crate::core::domain::{Conversation, ConversationSummary, Workspace};
 use crate::core::errors::AppError;
 use crate::core::storage::Storage;
+use crate::core::tools::ConfirmHandler;
+use crate::run_agent_task_core;
 
+use super::sse::SseEventSink;
 use super::state::ServerState;
 
 /// POST /pair — 配对，用配对码换 token。唯一不需鉴权的路由。
@@ -122,4 +134,60 @@ fn current_workspace_path() -> Option<String> {
 fn map_err(e: AppError) -> (StatusCode, String) {
     tracing::error!(error = %e, "server handler error");
     (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+}
+
+// ── /chat SSE 流式续聊 ──
+
+#[derive(Deserialize)]
+pub struct ChatRequest {
+    pub prompt: String,
+    pub conversation_id: Option<String>,
+}
+
+/// POST /chat — 发消息续聊，SSE 流推送 agent 事件（token/thought/round_timing/
+/// tool_call/tool_result/summary）。
+///
+/// confirm MVP 自动放行（AutoConfirmHandler）——高危命令仍由 command_risk 模块
+/// 拒绝级拦截，只是「需用户确认」这一档自动通过。手机端确认 UI 在第三层做。
+pub async fn chat(
+    Json(req): Json<ChatRequest>,
+) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
+    let (tx, rx) = mpsc::channel::<crate::core::domain::AgentEvent>(256);
+    let sink = Arc::new(SseEventSink { tx }) as Arc<dyn EventSink>;
+
+    // spawn agent 任务，不 await——让它边跑边推事件到 channel
+    let cancel = Arc::new(AtomicBool::new(false));
+    let confirm = Arc::new(AutoConfirmHandler) as Arc<dyn ConfirmHandler>;
+    tokio::spawn(async move {
+        let result = run_agent_task_core(
+            req.prompt,
+            req.conversation_id,
+            cancel,
+            confirm,
+            sink,
+        )
+        .await;
+        if let Err(e) = result {
+            tracing::error!(error = %e, "chat: agent task failed");
+        }
+        // tx 在此 drop，rx 流自然结束，SSE 客户端收到流结束信号
+    });
+
+    let stream = ReceiverStream::new(rx).map(|event| {
+        let json = serde_json::to_string(&event).unwrap_or_else(|_| "{}".into());
+        Ok::<_, Infallible>(Event::default().data(json))
+    });
+
+    Sse::new(stream)
+}
+
+/// HTTP 版确认 handler：MVP 自动放行（高危命令仍由 command_risk 拒绝级拦截）。
+/// 第三层做完后再改成 SSE 推确认请求 + 等待手机端响应。
+struct AutoConfirmHandler;
+
+#[async_trait::async_trait]
+impl ConfirmHandler for AutoConfirmHandler {
+    async fn confirm(&self, _command: &str, _reason: &str) -> bool {
+        true
+    }
 }
