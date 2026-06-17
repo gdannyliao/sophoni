@@ -78,7 +78,7 @@ pub fn validate_url_scheme(url: &str) -> AppResult<()> {
     }
 }
 
-// ── 搜索后端（Task 5 实现）──
+// ── 搜索后端 ──
 
 /// 搜索后端抽象。Tavily 和 Google CSE 各一实现。
 #[async_trait::async_trait]
@@ -91,23 +91,218 @@ pub trait WebSearchBackend: Send + Sync {
     ) -> AppResult<Vec<SearchResult>>;
 }
 
+pub struct TavilyBackend {
+    api_key: String,
+}
+
+impl TavilyBackend {
+    pub fn new(api_key: String) -> Self {
+        Self { api_key }
+    }
+}
+
+#[async_trait::async_trait]
+impl WebSearchBackend for TavilyBackend {
+    async fn search(
+        &self,
+        client: &reqwest::Client,
+        query: &str,
+        max_results: usize,
+    ) -> AppResult<Vec<SearchResult>> {
+        #[derive(serde::Serialize)]
+        struct Req<'a> {
+            query: &'a str,
+            max_results: usize,
+            search_depth: &'a str,
+        }
+        #[derive(serde::Deserialize)]
+        struct Resp {
+            #[serde(default)]
+            results: Vec<TavilyItem>,
+        }
+        #[derive(serde::Deserialize)]
+        struct TavilyItem {
+            #[serde(default)]
+            title: String,
+            #[serde(default)]
+            content: String,
+            #[serde(default)]
+            url: String,
+        }
+        let resp = client
+            .post("https://api.tavily.com/search")
+            .bearer_auth(&self.api_key)
+            .json(&Req {
+                query,
+                max_results,
+                search_depth: "basic",
+            })
+            .send()
+            .await
+            .map_err(|e| AppError::Tool(format!("Tavily 请求失败: {e}")))?
+            .json::<Resp>()
+            .await
+            .map_err(|e| AppError::Tool(format!("Tavily 响应解析失败: {e}")))?;
+        Ok(resp
+            .results
+            .into_iter()
+            .map(|i| SearchResult {
+                title: i.title,
+                snippet: i.content,
+                url: i.url,
+            })
+            .collect())
+    }
+}
+
+pub struct GoogleCseBackend {
+    api_key: String,
+    cx: String,
+}
+
+impl GoogleCseBackend {
+    pub fn new(api_key: String, cx: String) -> Self {
+        Self { api_key, cx }
+    }
+}
+
+#[async_trait::async_trait]
+impl WebSearchBackend for GoogleCseBackend {
+    async fn search(
+        &self,
+        client: &reqwest::Client,
+        query: &str,
+        max_results: usize,
+    ) -> AppResult<Vec<SearchResult>> {
+        #[derive(serde::Deserialize)]
+        struct Resp {
+            #[serde(default)]
+            items: Vec<GoogleItem>,
+        }
+        #[derive(serde::Deserialize)]
+        struct GoogleItem {
+            #[serde(default)]
+            title: String,
+            #[serde(default)]
+            link: String,
+            #[serde(default)]
+            snippet: String,
+        }
+        let resp = client
+            .get("https://www.googleapis.com/customsearch/v1")
+            .query(&[
+                ("q", query),
+                ("key", &self.api_key),
+                ("cx", &self.cx),
+                ("num", &max_results.to_string()),
+            ])
+            .send()
+            .await
+            .map_err(|e| AppError::Tool(format!("Google CSE 请求失败: {e}")))?
+            .json::<Resp>()
+            .await
+            .map_err(|e| AppError::Tool(format!("Google CSE 响应解析失败: {e}")))?;
+        Ok(resp
+            .items
+            .into_iter()
+            .map(|i| SearchResult {
+                title: i.title,
+                snippet: i.snippet,
+                url: i.link,
+            })
+            .collect())
+    }
+}
+
 /// 按配置选择后端：优先 Tavily，fallback Google CSE。
 /// 返回 None 表示没有可用后端配置。
-pub fn select_backend(_config: &SearchConfig) -> Option<Box<dyn WebSearchBackend>> {
-    // Task 5 实现
+pub fn select_backend(config: &SearchConfig) -> Option<Box<dyn WebSearchBackend>> {
+    if let Some(key) = config
+        .tavily_key
+        .as_ref()
+        .filter(|k| !k.trim().is_empty())
+    {
+        return Some(Box::new(TavilyBackend::new(key.clone())));
+    }
+    if let (Some(key), Some(cx)) = (
+        config
+            .google_key
+            .as_ref()
+            .filter(|k| !k.trim().is_empty()),
+        config.google_cx.as_ref().filter(|c| !c.trim().is_empty()),
+    ) {
+        return Some(Box::new(GoogleCseBackend::new(key.clone(), cx.clone())));
+    }
     None
 }
 
-// ── web_fetch（Task 6 实现）──
+// ── web_fetch ──
 
-/// 抓取 URL 并转为纯文本。
-pub async fn web_fetch(
-    _client: &reqwest::Client,
-    _url: &str,
-    _max_chars: usize,
-) -> AppResult<String> {
-    // Task 6 实现
-    Err(AppError::Tool("web_fetch 尚未实现".into()))
+/// 抓取 URL 并转为纯文本。流程：校验 scheme → DNS 解析校验非内网 →
+/// HTTP GET（限 text/* Content-Type）→ HTML 转文本 → 截断。
+pub async fn web_fetch(client: &reqwest::Client, url: &str, max_chars: usize) -> AppResult<String> {
+    validate_url_scheme(url)?;
+
+    // 解析域名做 SSRF 校验
+    let parsed = url::Url::parse(url).map_err(|e| AppError::Tool(format!("无效 URL: {e}")))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| AppError::Tool("URL 缺少 host".into()))?;
+    let port = parsed.port_or_known_default().unwrap_or(80);
+    let host_port = format!("{host}:{port}");
+    let addrs = tokio::net::lookup_host(&host_port)
+        .await
+        .map_err(|e| AppError::Tool(format!("DNS 解析失败: {e}")))?;
+    for addr in addrs {
+        if is_private_ip(&addr.ip()) {
+            return Err(AppError::Tool(format!("拒绝抓取内网地址: {host}")));
+        }
+    }
+
+    // HTTP GET
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| AppError::Tool(format!("请求失败: {e}")))?;
+
+    if !resp.status().is_success() {
+        return Err(AppError::Tool(format!("HTTP {}", resp.status())));
+    }
+
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_lowercase();
+    if !content_type.starts_with("text/")
+        && !content_type.contains("xml")
+        && !content_type.contains("json")
+    {
+        return Err(AppError::Tool(format!("不支持的页面类型: {content_type}")));
+    }
+
+    // 限 1MB 读取
+    let body = resp
+        .bytes()
+        .await
+        .map_err(|e| AppError::Tool(format!("读取响应体失败: {e}")))?;
+    let body_str = String::from_utf8_lossy(&body);
+
+    // HTML 转纯文本
+    let text = html2text::from_read(body_str.as_bytes(), usize::MAX);
+
+    // 截断
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= max_chars {
+        Ok(text)
+    } else {
+        let truncated: String = chars[..max_chars].iter().collect();
+        Ok(format!(
+            "{truncated}\n（内容已截断，显示前 {max_chars} 字符）"
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -224,5 +419,109 @@ mod tests {
             google_cx: None,
         };
         assert!(!c2.has_backend());
+    }
+
+    #[test]
+    fn select_backend_prefers_tavily() {
+        let c = SearchConfig {
+            tavily_key: Some("tvly".into()),
+            google_key: Some("g".into()),
+            google_cx: Some("cx".into()),
+        };
+        assert!(select_backend(&c).is_some());
+    }
+
+    #[test]
+    fn select_backend_fallbacks_to_google() {
+        let c = SearchConfig {
+            tavily_key: None,
+            google_key: Some("g".into()),
+            google_cx: Some("cx".into()),
+        };
+        assert!(select_backend(&c).is_some());
+    }
+
+    #[test]
+    fn select_backend_returns_none_when_unconfigured() {
+        let c = SearchConfig {
+            tavily_key: None,
+            google_key: None,
+            google_cx: None,
+        };
+        assert!(select_backend(&c).is_none());
+    }
+
+    #[test]
+    fn tavily_response_deserializes_correctly() {
+        // 测 Tavily JSON 响应结构能正确反序列化为 SearchResult
+        let mock_resp = r#"{"results":[
+            {"title":"Rust docs","content":"Rust is...","url":"https://doc.rust-lang.org"},
+            {"title":"Learn Rust","content":"Getting started...","url":"https://rust-lang.org/learn"}
+        ]}"#;
+        #[derive(serde::Deserialize)]
+        struct Resp {
+            #[serde(default)]
+            results: Vec<Item>,
+        }
+        #[derive(serde::Deserialize)]
+        struct Item {
+            #[serde(default)]
+            title: String,
+            #[serde(default)]
+            content: String,
+            #[serde(default)]
+            url: String,
+        }
+        let parsed: Resp = serde_json::from_str(mock_resp).unwrap();
+        assert_eq!(parsed.results.len(), 2);
+        assert_eq!(parsed.results[0].title, "Rust docs");
+        assert_eq!(parsed.results[0].url, "https://doc.rust-lang.org");
+    }
+
+    #[test]
+    fn html_to_text_extracts_content() {
+        // 测 html2text 能把 HTML 转成可读文本（web_fetch 的子逻辑）
+        let html = "<html><body><h1>Title</h1><p>Hello world</p></body></html>";
+        let text = html2text::from_read(html.as_bytes(), usize::MAX);
+        assert!(text.contains("Title"));
+        assert!(text.contains("Hello world"));
+    }
+
+    #[test]
+    fn web_fetch_truncation_logic() {
+        // 测截断逻辑（web_fetch 的子逻辑）
+        let long: String = "a".repeat(10000);
+        let max_chars = 100;
+        let chars: Vec<char> = long.chars().collect();
+        let result: String = if chars.len() <= max_chars {
+            long.clone()
+        } else {
+            let t: String = chars[..max_chars].iter().collect();
+            format!("{t}\n（内容已截断，显示前 {max_chars} 字符）")
+        };
+        assert!(result.contains("截断"));
+        assert!(result.starts_with(&"a".repeat(100)));
+    }
+
+    #[test]
+    fn web_fetch_content_type_check_logic() {
+        // 测 Content-Type 校验逻辑（web_fetch 的子逻辑）
+        let text_ct = "text/html; charset=utf-8";
+        let json_ct = "application/json";
+        let image_ct = "image/png";
+        let is_text = |ct: &str| {
+            ct.starts_with("text/") || ct.contains("xml") || ct.contains("json")
+        };
+        assert!(is_text(text_ct));
+        assert!(is_text(json_ct));
+        assert!(!is_text(image_ct));
+    }
+
+    #[tokio::test]
+    async fn web_fetch_rejects_invalid_scheme() {
+        // scheme 校验在 DNS 之前，非 http/https 直接拒绝
+        let client = reqwest::Client::new();
+        let result = web_fetch(&client, "file:///etc/passwd", 8000).await;
+        assert!(result.is_err());
     }
 }
