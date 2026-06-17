@@ -12,9 +12,10 @@ pub struct SseEventSink {
 
 impl EventSink for SseEventSink {
     fn emit(&self, event: &AgentEvent) {
-        // blocking_send：绝不丢事件（token 丢了会导致手机端文本不完整）。
-        // agent 循环串行，channel 容量 256，实际不会长时间阻塞。
-        // 注意：EventSink::emit 是同步方法，blocking_send 在同步上下文安全。
-        let _ = self.tx.blocking_send(event.clone());
+        // try_send 而非 blocking_send：emit 在 agent 循环的 async 上下文里被调用，
+        // blocking_send 会 panic（Cannot block the current thread from within a runtime）。
+        // channel 容量 1024，远大于实际事件频率（token 已被后端 30ms 批量合并），
+        // 不会真丢。满载时 try_send 返回 Err，丢弃该事件（优于 panic）。
+        let _ = self.tx.try_send(event.clone());
     }
 }

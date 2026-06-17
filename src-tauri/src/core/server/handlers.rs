@@ -152,7 +152,7 @@ pub struct ChatRequest {
 pub async fn chat(
     Json(req): Json<ChatRequest>,
 ) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
-    let (tx, rx) = mpsc::channel::<crate::core::domain::AgentEvent>(256);
+    let (tx, rx) = mpsc::channel::<crate::core::domain::AgentEvent>(1024);
     let sink = Arc::new(SseEventSink { tx }) as Arc<dyn EventSink>;
 
     // spawn agent 任务，不 await——让它边跑边推事件到 channel
