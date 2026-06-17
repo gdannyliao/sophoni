@@ -388,7 +388,9 @@ fn run_desktop() {
             let server_port = server_port.clone();
             move |_app| {
                 let router = core::server::build_router(server_state);
-                tokio::spawn(async move {
+                // 用 tauri::async_runtime::spawn（而非裸 tokio::spawn），
+                // 因为 setup 闭包不在 async context，裸 tokio::spawn 会 panic（no reactor）。
+                tauri::async_runtime::spawn(async move {
                     let listener = tokio::net::TcpListener::bind("0.0.0.0:0")
                         .await
                         .expect("server bind failed");
