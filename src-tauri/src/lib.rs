@@ -173,15 +173,18 @@ fn resolve_conversation(
     Ok((conv, true, vec![], memory_context, existing_categories))
 }
 
-#[tauri::command]
-async fn run_agent_task(
-    state: State<'_, AppState>,
-    app: AppHandle,
+/// 传输无关的 agent 任务核心逻辑。IPC（Tauri command）和 HTTP（axum handler）共用。
+/// confirm_handler 决定高危命令确认去哪（IPC 的 TauriConfirmHandler / HTTP 的自动放行），
+/// sink 决定事件去哪（IPC 的 AppEventSink / HTTP 的 SseEventSink）。
+pub(crate) async fn run_agent_task_core(
     prompt: String,
     existing_conversation_id: Option<String>,
+    cancel: Arc<AtomicBool>,
+    confirm_handler: Arc<dyn ConfirmHandler>,
+    sink: Arc<dyn EventSink>,
 ) -> Result<AgentTaskResult, AppError> {
-    state.cancel.store(false, Ordering::Relaxed);
-    tracing::info!(%prompt, "ipc run_agent_task");
+    cancel.store(false, Ordering::Relaxed);
+    tracing::info!(%prompt, "agent task started (core)");
 
     let (config, _provider) = AgentConfig::load()?;
     let risk_level = config.risk_level;
@@ -191,18 +194,12 @@ async fn run_agent_task(
     };
     let provider = OpenAICompatibleProvider::new(config);
 
-    let confirm_handler = Arc::new(TauriConfirmHandler {
-        app: app.clone(),
-        pending: state.confirm_pending.clone(),
-    });
     let tools = ToolDispatcher::new(PathBuf::from(&workspace))
         .with_risk_level(risk_level)
         .with_confirm_handler(confirm_handler)
         .with_workspace_mode(workspace_mode);
-    let sink = AppEventSink { app };
 
     // 在 async 外创建/复用 conversation + 读历史 turns 与记忆（Storage/Connection 不是 Send，不能跨 await）
-    // resolve_conversation 返回 (conv, is_new, history_turns, memory_context, existing_categories)
     let (conversation, is_new, history_turns, memory_context, existing_categories) = {
         let home = dirs::home_dir().ok_or_else(|| AppError::Config("no HOME".into()))?;
         let db_path = home.join(".config/sophoni/sophoni.db");
@@ -214,8 +211,8 @@ async fn run_agent_task(
     let result = run_agent_task_inner(
         Box::new(provider),
         &tools,
-        &sink,
-        &state.cancel,
+        sink.as_ref(),
+        &cancel,
         SystemPrompt(String::new()),
         prompt,
         vec![],
@@ -232,8 +229,6 @@ async fn run_agent_task(
         let db_path = home.join(".config/sophoni/sophoni.db");
         let storage = Storage::open(&db_path)?;
 
-        // events：复用会话时合并历史 events + 本轮 events，保证前端能完整回放历史 UI；
-        // 新会话直接写本轮 events。turns 始终写「历史 + 本轮」的完整累积。
         let final_events: Vec<AgentEvent> = if is_new {
             result.events.clone()
         } else {
@@ -247,14 +242,11 @@ async fn run_agent_task(
         let events_json = serde_json::to_string(&final_events).unwrap_or_else(|_| "[]".to_string());
         let _ = storage.update_conversation_events(&conversation.id, &events_json);
 
-        // turns：本轮 run_agent_task 返回的是「历史 + 本轮」完整 turns，直接整体写入
         let turns_json = serde_json::to_string(&result.turns).unwrap_or_else(|_| "[]".to_string());
         let _ = storage.update_conversation_turns(&conversation.id, &turns_json);
 
-        // 先去掉 <think> 标签，再解析 category
         let clean_text = core::agent::strip_think_tags(&result.summary);
         let (category, clean_summary) = core::agent::parse_category(&clean_text);
-        // 新会话用本轮 summary 作标题；复用会话保留原标题（避免后续消息覆盖掉首条标题）
         if is_new {
             let title = if clean_summary.is_empty() {
                 conversation.id.to_string()
@@ -269,6 +261,22 @@ async fn run_agent_task(
     }
 
     Ok(result)
+}
+
+#[tauri::command]
+async fn run_agent_task(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    prompt: String,
+    existing_conversation_id: Option<String>,
+) -> Result<AgentTaskResult, AppError> {
+    tracing::info!(%prompt, "ipc run_agent_task");
+    let confirm_handler = Arc::new(TauriConfirmHandler {
+        app: app.clone(),
+        pending: state.confirm_pending.clone(),
+    }) as Arc<dyn ConfirmHandler>;
+    let sink = Arc::new(AppEventSink { app }) as Arc<dyn EventSink>;
+    run_agent_task_core(prompt, existing_conversation_id, state.cancel.clone(), confirm_handler, sink).await
 }
 
 #[tauri::command]
