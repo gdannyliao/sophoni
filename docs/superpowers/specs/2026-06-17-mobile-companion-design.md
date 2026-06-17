@@ -98,7 +98,6 @@
 | `/workspaces/active` | GET | `get_workspace_path` | 当前激活工作区 |
 | `/workspaces/active` | PUT | `set_workspace_path` | 切换激活工作区 |
 | `/files/:path` | GET | 新增（读工作区文件） | ReviewView 读取文件内容 |
-| `/changes/:changeId/diff` | GET | 复用 FileChange.diff | 变更审查的 diff 内容 |
 | `/config/risk-level` | GET | `get_risk_level` | 当前风险等级 |
 | `/config/risk-level` | PUT | `set_risk_level` | 设置风险等级 |
 
@@ -241,7 +240,7 @@ impl EventSink for SseEventSink {
 3. **会话读取**：手机能列出并打开桌面已有会话，看到完整事件流（含流式 token、推理、轮次耗时徽章）。
 4. **续聊**：手机发消息能触发桌面 agent 循环，token 实时 SSE 推送，工具调用照常执行并返回结果。
 5. **工作区切换**：手机能列出桌面工作区并切换激活。
-6. **变更审查**：手机能查看会话的文件变更 diff。
+6. **变更审查**：手机能查看会话的文件变更 diff（diff 数据已含在 conversation 的 events_json 里，无需独立路由）。
 7. **向后兼容**：桌面端原有功能（IPC 通道）完全不受影响。
 8. **分层独立**：第一层可用 curl 独立验收；三层依赖顺序清晰。
 
