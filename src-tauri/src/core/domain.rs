@@ -161,6 +161,9 @@ pub enum AgentToolName {
     WebFetch,
     MultiEditFile,
     DeleteFile,
+    CreateScheduledTask,
+    ListScheduledTasks,
+    DeleteScheduledTask,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -203,6 +206,9 @@ pub enum AgentToolArgs {
     WebFetch { url: String, max_chars: usize },
     MultiEditFile { path: String, edits: Vec<MultiEdit> },
     DeleteFile { path: String },
+    CreateScheduledTask { prompt: String, hour: u32, minute: u32 },
+    ListScheduledTasks {},
+    DeleteScheduledTask { id: String },
 }
 
 /// multi_edit_file 的单处替换项。
@@ -259,6 +265,19 @@ pub struct ConfigStatus {
     pub configured: bool,
     pub provider: String,
     pub model: String,
+}
+
+/// 定时任务：每天固定时间用预设 prompt 触发 agent。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledTask {
+    pub id: Uuid,
+    pub prompt: String,
+    pub hour: u32,
+    pub minute: u32,
+    pub enabled: bool,
+    pub last_run_at: Option<String>,
+    pub created_at: String,
 }
 
 #[cfg(test)]
