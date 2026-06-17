@@ -121,6 +121,55 @@ fn set_workspace_path(path: String) -> Result<(), AppError> {
     Ok(())
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchConfigPayload {
+    tavily_key: Option<String>,
+    google_key: Option<String>,
+    google_cx: Option<String>,
+}
+
+#[tauri::command]
+fn get_search_config() -> Result<SearchConfigPayload, AppError> {
+    let (config, _) = AgentConfig::load().unwrap_or_else(|_| {
+        (
+            AgentConfig {
+                api_key: String::new(),
+                model: String::new(),
+                base_url: String::new(),
+                risk_level: core::command_risk::RiskLevel::Standard,
+                workspace_path: None,
+                search_config: None,
+            },
+            String::new(),
+        )
+    });
+    Ok(SearchConfigPayload {
+        tavily_key: config
+            .search_config
+            .as_ref()
+            .and_then(|c| c.tavily_key.clone()),
+        google_key: config
+            .search_config
+            .as_ref()
+            .and_then(|c| c.google_key.clone()),
+        google_cx: config
+            .search_config
+            .as_ref()
+            .and_then(|c| c.google_cx.clone()),
+    })
+}
+
+#[tauri::command]
+fn save_search_config(
+    tavily_key: Option<String>,
+    google_key: Option<String>,
+    google_cx: Option<String>,
+) -> Result<(), AppError> {
+    core::config::save_search_config(tavily_key, google_key, google_cx)?;
+    Ok(())
+}
+
 #[tauri::command]
 async fn resolve_command_confirm(
     state: State<'_, AppState>,
@@ -351,6 +400,8 @@ pub fn run() {
             resolve_command_confirm,
             get_workspace_path,
             set_workspace_path,
+            get_search_config,
+            save_search_config,
             list_conversations,
             get_conversation,
             delete_conversation,

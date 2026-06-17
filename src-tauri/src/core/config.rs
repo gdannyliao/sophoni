@@ -272,6 +272,52 @@ fn config_path() -> AppResult<PathBuf> {
     Ok(home.join(".config/sophoni/config.toml"))
 }
 
+/// 保存 [search] 段到 config.toml。
+/// 读取现有配置 → 替换/添加 [search] 段 → 整体写回。
+/// 注意：重新序列化会丢失注释（config 是程序生成，可接受）。
+pub fn save_search_config(
+    tavily_key: Option<String>,
+    google_key: Option<String>,
+    google_cx: Option<String>,
+) -> AppResult<()> {
+    use toml::map::Map;
+
+    let path = config_path()?;
+    let existing = if path.exists() {
+        fs::read_to_string(&path).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let mut parsed: toml::Value =
+        toml::from_str(&existing).unwrap_or(toml::Value::Table(Map::new()));
+
+    let search_table = {
+        let mut t = Map::new();
+        if let Some(k) = tavily_key.filter(|s| !s.trim().is_empty()) {
+            t.insert("tavily_key".into(), toml::Value::String(k));
+        }
+        if let Some(k) = google_key.filter(|s| !s.trim().is_empty()) {
+            t.insert("google_key".into(), toml::Value::String(k));
+        }
+        if let Some(c) = google_cx.filter(|s| !s.trim().is_empty()) {
+            t.insert("google_cx".into(), toml::Value::String(c));
+        }
+        t
+    };
+
+    if let Some(table) = parsed.as_table_mut() {
+        table.insert("search".into(), toml::Value::Table(search_table));
+        let serialized = toml::to_string_pretty(&toml::Value::Table(table.clone()))
+            .map_err(|e| AppError::Config(format!("序列化失败: {e}")))?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&path, serialized)?;
+        let _ = tighten_permissions(&path);
+    }
+    Ok(())
+}
+
 fn tighten_permissions(path: &PathBuf) -> AppResult<()> {
     let mut perms = fs::metadata(path)?.permissions();
     if perms.mode() & 0o077 != 0 {
