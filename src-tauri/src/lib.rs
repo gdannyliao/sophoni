@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use core::agent::{run_agent_task as run_agent_task_inner, run_mock_agent_task, AgentTaskResult, EventSink};
 use core::command_risk::{classify_command, CommandRisk, RiskLevel};
-use core::domain::{AgentConfig, AgentEvent, ConfigStatus, Conversation, ConversationSummary, SystemPrompt};
+use core::domain::{AgentConfig, AgentEvent, ConfigStatus, Conversation, ConversationSummary, ConversationTurn, SystemPrompt};
 use core::errors::AppError;
 use core::provider::OpenAICompatibleProvider;
 use core::storage::Storage;
@@ -134,11 +134,51 @@ async fn resolve_command_confirm(
     Ok(())
 }
 
+/// 解析当前会话：复用已有（返回历史 turns + 排除自身的记忆）或新建。
+/// 返回 (conversation, is_new, history_turns, memory_context, existing_categories)。
+fn resolve_conversation(
+    storage: &Storage,
+    workspace_id: &uuid::Uuid,
+    existing_conversation_id: Option<&str>,
+) -> Result<(Conversation, bool, Vec<ConversationTurn>, String, Vec<String>), AppError> {
+    // 复用分支：existing_conversation_id 合法且会话存在
+    if let Some(id_str) = existing_conversation_id {
+        if let Ok(id) = uuid::Uuid::parse_str(id_str) {
+            if let Ok(conv) = storage.get_conversation(&id) {
+                // 历史 turns：续聊时拼进 provider，让模型看到同会话之前的完整对话
+                let history_turns = storage.get_conversation_turns(&id).unwrap_or_default();
+                // 跨会话记忆：排除当前会话自身，避免记忆自引用
+                let memories = storage.list_conversation_memories(workspace_id, Some(&conv.id))?;
+                let memory_context = core::agent::build_memory_context(&memories);
+                let existing_categories: Vec<String> = memories
+                    .iter()
+                    .filter_map(|m| m.category.clone())
+                    .collect::<std::collections::HashSet<_>>()
+                    .into_iter()
+                    .collect();
+                return Ok((conv, false, history_turns, memory_context, existing_categories));
+            }
+        }
+    }
+    // 新建分支：无 id / id 非法 / 会话不存在
+    let conv = storage.create_conversation(workspace_id, &uuid::Uuid::new_v4().to_string())?;
+    let memories = storage.list_conversation_memories(workspace_id, None)?;
+    let memory_context = core::agent::build_memory_context(&memories);
+    let existing_categories: Vec<String> = memories
+        .iter()
+        .filter_map(|m| m.category.clone())
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    Ok((conv, true, vec![], memory_context, existing_categories))
+}
+
 #[tauri::command]
 async fn run_agent_task(
     state: State<'_, AppState>,
     app: AppHandle,
     prompt: String,
+    existing_conversation_id: Option<String>,
 ) -> Result<AgentTaskResult, AppError> {
     state.cancel.store(false, Ordering::Relaxed);
     tracing::info!(%prompt, "ipc run_agent_task");
@@ -161,23 +201,14 @@ async fn run_agent_task(
         .with_workspace_mode(workspace_mode);
     let sink = AppEventSink { app };
 
-    // 在 async 外创建 conversation + 读历史记忆（Storage/Connection 不是 Send，不能跨 await）
-    let (conversation, memory_context, existing_categories) = {
+    // 在 async 外创建/复用 conversation + 读历史 turns 与记忆（Storage/Connection 不是 Send，不能跨 await）
+    // resolve_conversation 返回 (conv, is_new, history_turns, memory_context, existing_categories)
+    let (conversation, is_new, history_turns, memory_context, existing_categories) = {
         let home = dirs::home_dir().ok_or_else(|| AppError::Config("no HOME".into()))?;
         let db_path = home.join(".config/sophoni/sophoni.db");
         let storage = Storage::open(&db_path)?;
         let ws = storage.get_or_create_workspace(&workspace)?;
-        // 读历史记忆
-        let memories = storage.list_conversation_memories(&ws.id)?;
-        let memory_context = core::agent::build_memory_context(&memories);
-        let existing_categories: Vec<String> = memories
-            .iter()
-            .filter_map(|m| m.category.clone())
-            .collect::<std::collections::HashSet<_>>()
-            .into_iter()
-            .collect();
-        let conv = storage.create_conversation(&ws.id, &uuid::Uuid::new_v4().to_string())?;
-        (conv, memory_context, existing_categories)
+        resolve_conversation(&storage, &ws.id, existing_conversation_id.as_deref())?
     };
 
     let result = run_agent_task_inner(
@@ -191,6 +222,7 @@ async fn run_agent_task(
         conversation.id,
         memory_context,
         existing_categories,
+        history_turns,
     )
     .await?;
 
@@ -199,18 +231,38 @@ async fn run_agent_task(
         let home = dirs::home_dir().ok_or_else(|| AppError::Config("no HOME".into()))?;
         let db_path = home.join(".config/sophoni/sophoni.db");
         let storage = Storage::open(&db_path)?;
-        let events_json = serde_json::to_string(&result.events).unwrap_or_else(|_| "[]".to_string());
+
+        // events：复用会话时合并历史 events + 本轮 events，保证前端能完整回放历史 UI；
+        // 新会话直接写本轮 events。turns 始终写「历史 + 本轮」的完整累积。
+        let final_events: Vec<AgentEvent> = if is_new {
+            result.events.clone()
+        } else {
+            let history_events: Vec<AgentEvent> = storage
+                .get_conversation(&conversation.id)
+                .ok()
+                .and_then(|c| serde_json::from_str(&c.events_json).ok())
+                .unwrap_or_default();
+            [history_events, result.events.clone()].concat()
+        };
+        let events_json = serde_json::to_string(&final_events).unwrap_or_else(|_| "[]".to_string());
         let _ = storage.update_conversation_events(&conversation.id, &events_json);
+
+        // turns：本轮 run_agent_task 返回的是「历史 + 本轮」完整 turns，直接整体写入
+        let turns_json = serde_json::to_string(&result.turns).unwrap_or_else(|_| "[]".to_string());
+        let _ = storage.update_conversation_turns(&conversation.id, &turns_json);
 
         // 先去掉 <think> 标签，再解析 category
         let clean_text = core::agent::strip_think_tags(&result.summary);
         let (category, clean_summary) = core::agent::parse_category(&clean_text);
-        let title = if clean_summary.is_empty() {
-            conversation.id.to_string()
-        } else {
-            clean_summary.clone()
-        };
-        let _ = storage.update_conversation_title(&conversation.id, &title);
+        // 新会话用本轮 summary 作标题；复用会话保留原标题（避免后续消息覆盖掉首条标题）
+        if is_new {
+            let title = if clean_summary.is_empty() {
+                conversation.id.to_string()
+            } else {
+                clean_summary.clone()
+            };
+            let _ = storage.update_conversation_title(&conversation.id, &title);
+        }
         if let Some(cat) = &category {
             let _ = storage.update_conversation_category(&conversation.id, cat);
         }

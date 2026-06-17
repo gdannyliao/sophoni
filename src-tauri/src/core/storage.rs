@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
 use uuid::Uuid;
 
-use super::domain::{Conversation, ConversationMemory, ConversationSummary, Workspace};
+use super::domain::{Conversation, ConversationMemory, ConversationSummary, ConversationTurn, Workspace};
 use super::errors::AppResult;
 
 pub struct Storage {
@@ -85,6 +85,10 @@ impl Storage {
         );
         let _ = self.conn.execute(
             "ALTER TABLE conversations ADD COLUMN category TEXT",
+            [],
+        );
+        let _ = self.conn.execute(
+            "ALTER TABLE conversations ADD COLUMN turns_json TEXT NOT NULL DEFAULT '[]'",
             [],
         );
         Ok(())
@@ -188,6 +192,7 @@ impl Storage {
             workspace_id: *workspace_id,
             title: title.to_string(),
             events_json: "[]".to_string(),
+            turns_json: "[]".to_string(),
             created_at: now,
             updated_at: now,
         })
@@ -227,13 +232,13 @@ impl Storage {
     pub fn get_conversation(&self, id: &Uuid) -> AppResult<Conversation> {
         self.conn
             .query_row(
-                "SELECT id, workspace_id, title, events_json, created_at, updated_at FROM conversations WHERE id = ?1",
+                "SELECT id, workspace_id, title, events_json, turns_json, created_at, updated_at FROM conversations WHERE id = ?1",
                 params![id.to_string()],
                 |row| {
                     let conv_id: String = row.get(0)?;
                     let ws_id: String = row.get(1)?;
-                    let created_at: String = row.get(4)?;
-                    let updated_at: String = row.get(5)?;
+                    let created_at: String = row.get(5)?;
+                    let updated_at: String = row.get(6)?;
                     Ok(Conversation {
                         id: Uuid::parse_str(&conv_id).map_err(|e| {
                             rusqlite::Error::FromSqlConversionFailure(
@@ -251,10 +256,11 @@ impl Storage {
                         })?,
                         title: row.get(2)?,
                         events_json: row.get(3)?,
+                        turns_json: row.get(4)?,
                         created_at: DateTime::parse_from_rfc3339(&created_at)
                             .map_err(|e| {
                                 rusqlite::Error::FromSqlConversionFailure(
-                                    4,
+                                    5,
                                     rusqlite::types::Type::Text,
                                     Box::new(e),
                                 )
@@ -263,7 +269,7 @@ impl Storage {
                         updated_at: DateTime::parse_from_rfc3339(&updated_at)
                             .map_err(|e| {
                                 rusqlite::Error::FromSqlConversionFailure(
-                                    5,
+                                    6,
                                     rusqlite::types::Type::Text,
                                     Box::new(e),
                                 )
@@ -284,6 +290,25 @@ impl Storage {
         Ok(())
     }
 
+    pub fn update_conversation_turns(&self, id: &Uuid, turns_json: &str) -> AppResult<()> {
+        let now = Utc::now().to_rfc3339();
+        self.conn.execute(
+            "UPDATE conversations SET turns_json = ?1, updated_at = ?2 WHERE id = ?3",
+            params![turns_json, now, id.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// 读取会话历史 turns。解析失败（脏数据/旧版本）时返回空 vec，避免阻塞续聊。
+    pub fn get_conversation_turns(&self, id: &Uuid) -> AppResult<Vec<ConversationTurn>> {
+        let turns_json: String = self.conn.query_row(
+            "SELECT turns_json FROM conversations WHERE id = ?1",
+            params![id.to_string()],
+            |row| row.get(0),
+        )?;
+        Ok(serde_json::from_str(&turns_json).unwrap_or_default())
+    }
+
     pub fn update_conversation_title(&self, id: &Uuid, title: &str) -> AppResult<()> {
         let now = Utc::now().to_rfc3339();
         self.conn.execute(
@@ -293,31 +318,33 @@ impl Storage {
         Ok(())
     }
 
+    /// 列出 workspace 下的会话记忆（category + title）。
+    /// `exclude` 传入当前会话 id 时，会跳过它（避免记忆自引用当前会话）。
     pub fn list_conversation_memories(
         &self,
         workspace_id: &Uuid,
+        exclude: Option<&Uuid>,
     ) -> AppResult<Vec<ConversationMemory>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT category, title, updated_at FROM conversations WHERE workspace_id = ?1 ORDER BY updated_at ASC",
-        )?;
-        let mut rows = stmt.query(params![workspace_id.to_string()])?;
         let mut memories = Vec::new();
-        while let Some(row) = rows.next()? {
-            let category: Option<String> = row.get(0)?;
-            let updated_at: String = row.get(2)?;
-            memories.push(ConversationMemory {
-                category,
-                summary: row.get(1)?,
-                updated_at: DateTime::parse_from_rfc3339(&updated_at)
-                    .map_err(|e| {
-                        rusqlite::Error::FromSqlConversionFailure(
-                            2,
-                            rusqlite::types::Type::Text,
-                            Box::new(e),
-                        )
-                    })?
-                    .with_timezone(&Utc),
-            });
+        match exclude {
+            Some(excluded_id) => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT category, title, updated_at FROM conversations WHERE workspace_id = ?1 AND id != ?2 ORDER BY updated_at ASC",
+                )?;
+                let mut rows = stmt.query(params![workspace_id.to_string(), excluded_id.to_string()])?;
+                while let Some(row) = rows.next()? {
+                    memories.push(row_to_memory(row)?);
+                }
+            }
+            None => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT category, title, updated_at FROM conversations WHERE workspace_id = ?1 ORDER BY updated_at ASC",
+                )?;
+                let mut rows = stmt.query(params![workspace_id.to_string()])?;
+                while let Some(row) = rows.next()? {
+                    memories.push(row_to_memory(row)?);
+                }
+            }
         }
         Ok(memories)
     }
@@ -349,6 +376,21 @@ impl Storage {
             .query_row("PRAGMA foreign_keys", [], |row| row.get(0))?;
         Ok(enabled == 1)
     }
+}
+
+/// 把一行 (category, title, updated_at) 转成 ConversationMemory。
+fn row_to_memory(row: &rusqlite::Row<'_>) -> AppResult<ConversationMemory> {
+    let category: Option<String> = row.get(0)?;
+    let updated_at: String = row.get(2)?;
+    Ok(ConversationMemory {
+        category,
+        summary: row.get(1)?,
+        updated_at: DateTime::parse_from_rfc3339(&updated_at)
+            .map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(e))
+            })?
+            .with_timezone(&Utc),
+    })
 }
 
 #[cfg(test)]
@@ -473,11 +515,85 @@ mod tests {
         let loaded = storage.get_conversation(&conv.id).unwrap();
         assert_eq!(loaded.title, "修复编译错误");
         assert_eq!(loaded.events_json, r#"[{"kind":"summary"}]"#);
+        assert_eq!(loaded.turns_json, "[]", "新建会话 turns_json 默认应为 []");
 
         // list
         let list = storage.list_conversations(&workspace.id).unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].title, "修复编译错误");
+    }
+
+    #[test]
+    fn storage_conversation_turns_roundtrip() {
+        use super::super::domain::{AgentToolName, AgentToolArgs, AgentToolCall, AgentToolResult, ConversationTurn};
+        let storage = Storage::open_in_memory().unwrap();
+        let workspace = storage.get_or_create_workspace("/tmp/turns-test").unwrap();
+        let conv = storage.create_conversation(&workspace.id, "turns-conv").unwrap();
+
+        let turns = vec![
+            ConversationTurn::User { content: "你好".into() },
+            ConversationTurn::Assistant {
+                content: Some("在的".into()),
+                tool_calls: vec![AgentToolCall {
+                    id: "call_1".into(),
+                    name: AgentToolName::ReadFile,
+                    arguments: AgentToolArgs::Read { path: "README.md".into() },
+                }],
+            },
+            ConversationTurn::Tool {
+                tool_call_id: "call_1".into(),
+                result: AgentToolResult {
+                    tool_call_id: "call_1".into(),
+                    content: "文件内容".into(),
+                    is_error: false,
+                    file_change: None,
+                },
+            },
+        ];
+        let json = serde_json::to_string(&turns).unwrap();
+        storage.update_conversation_turns(&conv.id, &json).unwrap();
+
+        // 读回应 round-trip 一致
+        let loaded = storage.get_conversation_turns(&conv.id).unwrap();
+        assert_eq!(loaded.len(), 3);
+        assert!(matches!(&loaded[0], ConversationTurn::User { content } if content == "你好"));
+        assert!(matches!(&loaded[2], ConversationTurn::Tool { tool_call_id, .. } if tool_call_id == "call_1"));
+
+        // get_conversation 里 turns_json 也应同步
+        let conv_full = storage.get_conversation(&conv.id).unwrap();
+        assert_eq!(conv_full.turns_json, json);
+    }
+
+    #[test]
+    fn storage_get_conversation_turns_dirty_data_returns_empty() {
+        let storage = Storage::open_in_memory().unwrap();
+        let workspace = storage.get_or_create_workspace("/tmp/dirty-test").unwrap();
+        let conv = storage.create_conversation(&workspace.id, "dirty").unwrap();
+        // 写入无法解析的脏数据，应容错返回空 vec 而非报错
+        storage.update_conversation_turns(&conv.id, "not-json").unwrap();
+        let loaded = storage.get_conversation_turns(&conv.id).unwrap();
+        assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn storage_list_conversation_memories_excludes_current() {
+        let storage = Storage::open_in_memory().unwrap();
+        let workspace = storage.get_or_create_workspace("/tmp/mem-test").unwrap();
+        let conv_a = storage.create_conversation(&workspace.id, "任务A").unwrap();
+        let conv_b = storage.create_conversation(&workspace.id, "任务B").unwrap();
+        storage.update_conversation_category(&conv_a.id, "编译").unwrap();
+        storage.update_conversation_category(&conv_b.id, "文档").unwrap();
+
+        // 不排除：应含两条
+        let all = storage.list_conversation_memories(&workspace.id, None).unwrap();
+        assert_eq!(all.len(), 2);
+
+        // 排除 conv_a：应只剩 conv_b
+        let excluded = storage
+            .list_conversation_memories(&workspace.id, Some(&conv_a.id))
+            .unwrap();
+        assert_eq!(excluded.len(), 1);
+        assert_eq!(excluded[0].summary, "任务B");
     }
 
     #[test]

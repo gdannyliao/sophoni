@@ -22,6 +22,8 @@ pub struct AgentTaskResult {
     pub summary: String,
     pub events: Vec<AgentEvent>,
     pub file_changes: Vec<FileChange>,
+    /// 本轮累积的完整 turns（含历史 history_turns + 本轮新增），用于持久化到 turns_json。
+    pub turns: Vec<ConversationTurn>,
 }
 
 const MAX_ROUNDS: usize = 12;
@@ -192,24 +194,27 @@ pub async fn run_agent_task(
     conversation_id: uuid::Uuid,
     memory_context: String,
     existing_categories: Vec<String>,
+    history_turns: Vec<ConversationTurn>,
 ) -> AppResult<AgentTaskResult> {
     let task_start = Instant::now();
     info!(prompt = %user_task, "agent task started");
     let system = SystemPrompt(system_prompt(tools.risk_level(), tools.workspace_mode(), &existing_categories));
-    let mut turns: Vec<ConversationTurn> = vec![];
+    // 续聊：先继承历史 turns，模型能看到同会话之前的完整对话。
+    // 新会话时 history_turns 为空，等价于从零开始。
+    let mut turns: Vec<ConversationTurn> = history_turns;
     if !memory_context.is_empty() {
         turns.push(ConversationTurn::Assistant {
             content: Some(memory_context.clone()),
             tool_calls: vec![],
         });
     }
-    turns.push(ConversationTurn::User { content: user_task });
+    turns.push(ConversationTurn::User { content: user_task.clone() });
     let mut events: Vec<AgentEvent> = vec![];
     let mut file_changes: Vec<FileChange> = vec![];
     let schemas = tool_schemas(tools.risk_level(), tools.workspace_mode());
     let deadline = Instant::now() + OVERALL_TIMEOUT;
 
-    // emit conversation_created 让前端立即更新 Sidebar
+    // emit conversation_created 让前端立即更新 Sidebar（复用会话时前端靠 id 去重）
     push(
         &mut events,
         sink,
@@ -217,6 +222,17 @@ pub async fn run_agent_task(
             kind: "conversation_created".into(),
             title: conversation_id.to_string(),
             body: conversation_id.to_string(),
+            tool_call_id: None,
+        },
+    );
+    // emit 用户消息事件，前端渲染用户气泡（连续会话可见每条输入）
+    push(
+        &mut events,
+        sink,
+        AgentEvent {
+            kind: "user".into(),
+            title: "用户".into(),
+            body: user_task,
             tool_call_id: None,
         },
     );
@@ -267,6 +283,12 @@ pub async fn run_agent_task(
                 let clean = strip_think_tags(&text);
                 emit_round_timing(&mut events, sink, round + 1, round_elapsed_ms, "最终答案");
                 push(&mut events, sink, summary_event(&clean));
+                // 必须把最终回复记进 turns，否则续聊时历史会缺失 assistant 回复，
+                // 导致下一轮 user 消息直接拼在上一轮 user 后面（模型看到连续两条 user 消息）。
+                turns.push(ConversationTurn::Assistant {
+                    content: Some(clean),
+                    tool_calls: vec![],
+                });
                 break;
             }
             Ok(Ok(ProviderResponse::ToolCalls(calls))) => {
@@ -346,6 +368,7 @@ pub async fn run_agent_task(
         summary,
         events,
         file_changes,
+        turns,
     })
 }
 
@@ -669,12 +692,13 @@ pub fn run_mock_agent_task(workspace_root: PathBuf, prompt: &str) -> AppResult<A
             },
         ],
         file_changes: vec![change],
+        turns: vec![],
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::domain::{AgentToolSchema, ChangeKind, ProviderResponse, SystemPrompt};
+    use super::super::domain::{AgentToolSchema, ChangeKind, ConversationTurn, ProviderResponse, SystemPrompt};
     use super::super::provider::{fake_read_call, fake_write_call, FakeProvider};
     use super::super::tools::ToolDispatcher;
     use super::{run_agent_task, run_mock_agent_task, EventSink};
@@ -804,6 +828,7 @@ mod tests {
             uuid::Uuid::new_v4(),
             String::new(),
             vec![],
+            vec![],
         )
         .await
         .unwrap();
@@ -813,6 +838,82 @@ mod tests {
 
         assert!(emitted.iter().any(|e| e.kind == "summary"));
         assert_eq!(result.file_changes.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn final_answer_records_assistant_turn_for_continuation() {
+        // 回归：FinalAnswer 分支必须把 assistant 回复 push 到 turns。
+        // 否则续聊时历史缺失 assistant 回复，下一轮 user 会直接拼在上一轮 user 后面。
+        let root = std::env::temp_dir().join(format!("sophoni-turn-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+
+        let provider = FakeProvider::new(vec![ProviderResponse::FinalAnswer("done".into())]);
+        let tools = ToolDispatcher::new(root.clone());
+        let sink = CollectingSink::new();
+        let cancel = Arc::new(AtomicBool::new(false));
+
+        let result = run_agent_task(
+            Box::new(provider),
+            &tools,
+            &sink,
+            &cancel,
+            SystemPrompt("sys".into()),
+            "你好".into(),
+            empty_schemas(),
+            uuid::Uuid::new_v4(),
+            String::new(),
+            vec![],
+            vec![],
+        )
+        .await
+        .unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+
+        // turns 应为 [User("你好"), Assistant("done")]，assistant 回复不能丢
+        assert_eq!(result.turns.len(), 2);
+        assert!(matches!(&result.turns[0], ConversationTurn::User { content } if content == "你好"));
+        assert!(matches!(&result.turns[1], ConversationTurn::Assistant { content: Some(c), tool_calls } if c == "done" && tool_calls.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn continuation_does_not_concat_two_user_turns() {
+        // 回归：模拟续聊 —— 传入 history_turns（含上一轮的 user + assistant 回复），
+        // 再追加新一轮 user。验证 turns 结构为 user→assistant→user，不会出现连续两个 user。
+        let root = std::env::temp_dir().join(format!("sophoni-cont-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+
+        let history = vec![
+            ConversationTurn::User { content: "第一个问题".into() },
+            ConversationTurn::Assistant { content: Some("第一个回答".into()), tool_calls: vec![] },
+        ];
+        let provider = FakeProvider::new(vec![ProviderResponse::FinalAnswer("第二个回答".into())]);
+        let tools = ToolDispatcher::new(root.clone());
+        let sink = CollectingSink::new();
+        let cancel = Arc::new(AtomicBool::new(false));
+
+        let result = run_agent_task(
+            Box::new(provider),
+            &tools,
+            &sink,
+            &cancel,
+            SystemPrompt("sys".into()),
+            "第二个问题".into(),
+            empty_schemas(),
+            uuid::Uuid::new_v4(),
+            String::new(),
+            vec![],
+            history,
+        )
+        .await
+        .unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+
+        // 期望：[User("第一个问题"), Assistant("第一个回答"), User("第二个问题"), Assistant("第二个回答")]
+        assert_eq!(result.turns.len(), 4);
+        assert!(matches!(&result.turns[0], ConversationTurn::User { content } if content == "第一个问题"));
+        assert!(matches!(&result.turns[1], ConversationTurn::Assistant { content: Some(c), .. } if c == "第一个回答"));
+        assert!(matches!(&result.turns[2], ConversationTurn::User { content } if content == "第二个问题"));
+        assert!(matches!(&result.turns[3], ConversationTurn::Assistant { content: Some(c), .. } if c == "第二个回答"));
     }
 
     #[tokio::test]
@@ -838,6 +939,7 @@ mod tests {
             empty_schemas(),
             uuid::Uuid::new_v4(),
             String::new(),
+            vec![],
             vec![],
         )
         .await
@@ -876,6 +978,7 @@ mod tests {
             uuid::Uuid::new_v4(),
             String::new(),
             vec![],
+            vec![],
         )
         .await
         .unwrap();
@@ -908,6 +1011,7 @@ mod tests {
             empty_schemas(),
             uuid::Uuid::new_v4(),
             String::new(),
+            vec![],
             vec![],
         )
         .await
@@ -968,6 +1072,7 @@ mod tests {
             vec![],
             uuid::Uuid::new_v4(),
             String::new(),
+            vec![],
             vec![],
         )
         .await
@@ -1052,6 +1157,7 @@ mod tests {
             vec![],
             uuid::Uuid::new_v4(),
             String::new(),
+            vec![],
             vec![],
         )
         .await
@@ -1168,6 +1274,7 @@ mod tests {
             vec![],
             uuid::Uuid::new_v4(),
             String::new(),
+            vec![],
             vec![],
         )
         .await

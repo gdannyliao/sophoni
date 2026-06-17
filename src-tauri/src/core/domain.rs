@@ -47,6 +47,7 @@ pub struct Conversation {
     pub workspace_id: Uuid,
     pub title: String,
     pub events_json: String,
+    pub turns_json: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -125,7 +126,8 @@ pub struct AgentEvent {
 // ── Agent runtime types (model-agnostic) ──
 // Prefixed with `Agent` to distinguish from persistence types above.
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "role", rename_all = "snake_case")]
 pub enum ConversationTurn {
     User {
         content: String,
@@ -143,7 +145,8 @@ pub enum ConversationTurn {
 #[derive(Debug, Clone)]
 pub struct SystemPrompt(pub String);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AgentToolName {
     ReadFile,
     WriteFile,
@@ -156,7 +159,7 @@ pub enum AgentToolName {
     RunCommand,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AgentToolArgs {
     Read {
         path: String,
@@ -194,14 +197,14 @@ pub enum AgentToolArgs {
     RunCommand { command: String },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentToolCall {
     pub id: String,
     pub name: AgentToolName,
     pub arguments: AgentToolArgs,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentToolResult {
     pub tool_call_id: String,
     pub content: String,
