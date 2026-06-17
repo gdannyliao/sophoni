@@ -5,9 +5,9 @@
   import ThoughtLine from "./ThoughtLine.svelte";
   import CommandCard from "./CommandCard.svelte";
   import ChangeNotice from "./ChangeNotice.svelte";
+  import ToolCallCard from "./ToolCallCard.svelte";
 
   export let events: AgentEvent[] = [];
-  export let summary = "";
   export let streamingText = "";
   export let prompt = "";
   export let running = false;
@@ -21,26 +21,53 @@
   // 消息区容器引用，用于 token 到达时自动滚动到底部。
   let messagesEl: HTMLDivElement | null = null;
 
-  // 处理事件流：用户消息、命令卡片、变更通知
-  type DisplayItem =
-    | { type: "user"; content: string }
+  // 中间过程项：一轮对话里 summary 之前的可折叠内容
+  type ProcessItem =
     | { type: "thought"; title: string }
     | { type: "command"; id: string; command: string; exitCode: number | null; stdout: string; stderr: string }
     | { type: "change"; path: string; kind: "created" | "modified" | "deleted" }
     | { type: "round_timing"; title: string; body: string }
-    | { type: "error"; body: string };
+    | { type: "tool_read"; id: string; title: string; result: string; isError: boolean; pending: boolean };
 
-  $: items = processEvents(events);
+  // 一轮对话：用户消息 + 中间过程 + 结果（summary 或 error）
+  type Turn = {
+    userContent: string;
+    process: ProcessItem[];
+    summary: string | null;
+    error: string | null;
+  };
 
-  function processEvents(events: AgentEvent[]): DisplayItem[] {
-    const items: DisplayItem[] = [];
-    const commandMap = new Map<string, DisplayItem & { type: "command" }>();
+  // events → turns：按 user 事件切分成多轮，每轮含中间过程和结果
+  $: turns = processTurns(events);
+
+  function processTurns(events: AgentEvent[]): Turn[] {
+    const turns: Turn[] = [];
+    const commandMap = new Map<string, ProcessItem & { type: "command" }>();
+    const toolReadMap = new Map<string, ProcessItem & { type: "tool_read" }>();
+    let current: Turn | null = null;
+
+    const ensureTurn = (): Turn => {
+      if (current === null) {
+        current = { userContent: "", process: [], summary: null, error: null };
+        turns.push(current);
+      }
+      return current;
+    };
 
     for (const ev of events) {
+      // user：开启一个新轮次
+      if (ev.kind === "user") {
+        current = { userContent: ev.body, process: [], summary: null, error: null };
+        turns.push(current);
+        continue;
+      }
+      // 以下事件归属当前轮；若没有前置 user（如历史脏数据），丢弃
+      if (current === null) continue;
+
       // tool_call: run_command → 创建命令卡片
       if (ev.kind === "tool_call" && ev.title.startsWith("run_command:")) {
         const command = ev.title.slice("run_command: ".length);
-        const item: DisplayItem & { type: "command" } = {
+        const item: ProcessItem & { type: "command" } = {
           type: "command",
           id: ev.toolCallId ?? ev.title,
           command,
@@ -49,13 +76,26 @@
           stderr: "",
         };
         if (ev.toolCallId) commandMap.set(ev.toolCallId, item);
-        items.push(item);
+        current.process.push(item);
       }
       // tool_call: edit_file / write_file → 变更通知
       else if (ev.kind === "tool_call" && (ev.title.startsWith("edit_file:") || ev.title.startsWith("write_file:"))) {
         const path = ev.title.split(":")[1]?.trim().split(" ")[0] ?? "";
         const kind = ev.title.startsWith("write_file:") ? "created" : "modified";
-        items.push({ type: "change", path, kind });
+        current.process.push({ type: "change", path, kind });
+      }
+      // tool_call: 其余只读工具（read_file/list_files/grep/验收相关）→ 统一工具卡片
+      else if (ev.kind === "tool_call") {
+        const item: ProcessItem & { type: "tool_read" } = {
+          type: "tool_read",
+          id: ev.toolCallId ?? ev.title,
+          title: ev.title,
+          result: "",
+          isError: false,
+          pending: true,
+        };
+        if (ev.toolCallId) toolReadMap.set(ev.toolCallId, item);
+        current.process.push(item);
       }
       // tool_result: 填充对应命令卡片
       else if (ev.kind === "tool_result" && ev.toolCallId && commandMap.has(ev.toolCallId)) {
@@ -69,20 +109,56 @@
           cmd.stderr = stderrMatch?.[1]?.trim() ?? "";
         }
       }
+      // tool_result: 填充只读工具卡片（成功是原始 content，失败是 "失败: <msg>"）
+      else if (ev.kind === "tool_result" && ev.toolCallId && toolReadMap.has(ev.toolCallId)) {
+        const item = toolReadMap.get(ev.toolCallId)!;
+        if (ev.body.startsWith("失败: ")) {
+          item.isError = true;
+          item.result = ev.body.slice("失败: ".length);
+        } else {
+          item.result = ev.body;
+        }
+        item.pending = false;
+      }
       // thought
       else if (ev.kind === "thought") {
-        items.push({ type: "thought", title: ev.body });
+        current.process.push({ type: "thought", title: ev.body });
+      }
+      // summary：每轮最终答案（取最后一个）
+      else if (ev.kind === "summary") {
+        current.summary = ev.body;
       }
       // round_timing：轮次耗时徽章
       else if (ev.kind === "round_timing") {
-        items.push({ type: "round_timing", title: ev.title, body: ev.body });
+        current.process.push({ type: "round_timing", title: ev.title, body: ev.body });
       }
       // error
       else if (ev.kind === "error") {
-        items.push({ type: "error", body: ev.body });
+        current.error = ev.body;
       }
     }
-    return items;
+    return turns;
+  }
+
+  // 折叠状态：按 turn 索引记录是否收起。summary 到达后默认收起；进行中/出错默认展开。
+  // events 引用变化（会话切换/新会话）时整体重置，避免索引错位。
+  let collapsed: Record<number, boolean> = {};
+  $: events, (collapsed = {});
+  $: collapsed = syncCollapsed(turns, collapsed);
+
+  function syncCollapsed(turns: Turn[], prev: Record<number, boolean>): Record<number, boolean> {
+    const next = { ...prev };
+    for (let i = 0; i < turns.length; i++) {
+      if (!(i in next)) {
+        // 新索引：有 summary 默认收起，否则（进行中/出错）展开
+        next[i] = turns[i].summary !== null;
+      }
+    }
+    return next;
+  }
+
+  function toggle(i: number) {
+    collapsed = { ...collapsed, [i]: !collapsed[i] };
   }
 
   function renderMarkdown(text: string): string {
@@ -113,20 +189,57 @@
   </header>
 
   <div class="messages" bind:this={messagesEl} aria-label="任务会话流">
-    {#each items as item}
-      <div class="agent-event" data-testid="agent-event">
-        {#if item.type === "user"}
-          <MessageBubble content={item.content} />
-        {:else if item.type === "thought"}
-          <ThoughtLine title={item.title} />
-        {:else if item.type === "round_timing"}
-          <div class="round-timing" data-testid="round-timing">⏱ {item.title} · {item.body}</div>
-        {:else if item.type === "command"}
-          <CommandCard command={item.command} exitCode={item.exitCode} stdout={item.stdout} stderr={item.stderr} />
-        {:else if item.type === "change"}
-          <ChangeNotice path={item.path} kind={item.kind} />
-        {:else if item.type === "error"}
-          <div class="error-card">{item.body}</div>
+    {#each turns as turn, i}
+      <div class="turn" data-testid="turn">
+        <!-- 用户消息气泡（始终可见） -->
+        <MessageBubble content={turn.userContent} />
+
+        <!-- 中间过程：进行中/出错/已展开时显示 -->
+        {#if !collapsed[i] && turn.process.length > 0}
+          <div class="turn-process" data-testid="turn-process">
+            {#each turn.process as item}
+              <div class="agent-event" data-testid="agent-event">
+                {#if item.type === "thought"}
+                  <ThoughtLine title={item.title} />
+                {:else if item.type === "round_timing"}
+                  <div class="round-timing" data-testid="round-timing">⏱ {item.title} · {item.body}</div>
+                {:else if item.type === "command"}
+                  <CommandCard command={item.command} exitCode={item.exitCode} stdout={item.stdout} stderr={item.stderr} />
+                {:else if item.type === "change"}
+                  <ChangeNotice path={item.path} kind={item.kind} />
+                {:else if item.type === "tool_read"}
+                  <ToolCallCard title={item.title} result={item.result} isError={item.isError} pending={item.pending} />
+                {/if}
+              </div>
+            {/each}
+          </div>
+        {/if}
+
+        <!-- 折叠控件：仅当有 summary 且中间过程非空时显示 -->
+        {#if turn.summary !== null && turn.process.length > 0}
+          <button
+            type="button"
+            class="collapse-toggle"
+            data-testid="collapse-toggle"
+            on:click={() => toggle(i)}
+          >
+            {collapsed[i]
+              ? `▸ 已执行 ${turn.process.length} 步（展开）`
+              : `▾ 已执行 ${turn.process.length} 步（收起）`}
+          </button>
+        {/if}
+
+        <!-- 结果摘要卡片（始终可见） -->
+        {#if turn.summary !== null}
+          <div class="summary-card" data-testid="summary-card">
+            <div class="summary-label">结果摘要</div>
+            <div class="markdown-body">{@html renderMarkdown(turn.summary)}</div>
+          </div>
+        {/if}
+
+        <!-- 错误（始终可见，不折叠） -->
+        {#if turn.error !== null}
+          <div class="error-card">{turn.error}</div>
         {/if}
       </div>
     {/each}
@@ -136,15 +249,9 @@
         <span class="streaming-cursor" aria-hidden="true">▍</span>
       </div>
     {/if}
-    {#if summary}
-      <div class="summary-card">
-        <div class="summary-label">结果摘要</div>
-        <div class="markdown-body">{@html renderMarkdown(summary)}</div>
-      </div>
-    {/if}
   </div>
 
-  <form class="composer" on:submit|preventDefault={() => onRun(prompt)}>
+  <form class="composer" on:submit|preventDefault={() => { onRun(prompt); prompt = ""; }}>
     <input data-testid="task-input" aria-label="任务输入" placeholder="让 Agent 读取、修改工作区文件..." bind:value={prompt} />
     <button data-testid="run-button" class="btn btn-primary" type="submit" disabled={running}>
       {running ? "运行中..." : "发送"}
@@ -187,6 +294,29 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-3);
+  }
+  .turn {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+  .turn-process {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+  .collapse-toggle {
+    align-self: flex-start;
+    background: none;
+    border: 0;
+    padding: var(--space-1) var(--space-2);
+    color: var(--text-secondary);
+    font-size: 12px;
+    cursor: pointer;
+    border-radius: var(--radius-sm);
+  }
+  .collapse-toggle:hover {
+    background: var(--bg-primary);
   }
   .error-card {
     background: rgba(248, 81, 73, 0.1);
