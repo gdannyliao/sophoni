@@ -81,6 +81,14 @@ pub fn classify_command(command: &str, _workspace_root: &str) -> CommandRisk {
         "git status",
         "git diff",
         "git log",
+        "git add",
+        "git commit",
+        "git push",
+        "git pull",
+        "git fetch",
+        "git checkout",
+        "git switch",
+        "git branch",
         "cargo test",
         "cargo check",
         "cargo build",
@@ -341,6 +349,37 @@ mod tests {
     fn git_diff_is_low_risk() {
         let risk = classify_command("git diff", "/tmp/project");
         assert_eq!(risk, CommandRisk::Low);
+    }
+
+    #[test]
+    fn git_write_commands_are_low_risk_in_standard() {
+        // Standard 档应放行常用 git 写操作（add/commit/push/pull/fetch/checkout/switch/branch）
+        for cmd in [
+            "git add src/main.rs",
+            "git commit -m feat",
+            "git push",
+            "git pull",
+            "git fetch",
+            "git checkout feature",
+            "git switch main",
+            "git branch",
+        ] {
+            assert_eq!(
+                classify_command(cmd, "/tmp/project"),
+                CommandRisk::Low,
+                "{cmd} 应为 Low"
+            );
+        }
+        // 同时确认 Standard 档放行（Allow）
+        for cmd in ["git add .", "git commit -m test", "git push origin main"] {
+            assert!(
+                matches!(
+                    classify_command_with_level(cmd, "/tmp/project", RiskLevel::Standard),
+                    CommandAction::Allow
+                ),
+                "{cmd} 在 Standard 应 Allow"
+            );
+        }
     }
 
     #[test]
@@ -776,11 +815,11 @@ mod tests {
     }
 
     #[test]
-    fn standard_denies_git_checkout() {
-        // Standard 模式 git checkout 不在白名单 → Deny
-        assert_eq!(
-            classify_command_with_level("git checkout feature", "/tmp/project", RiskLevel::Standard),
-            CommandAction::Deny("高风险命令".into())
-        );
+    fn standard_denies_git_reset() {
+        // Standard 模式 git reset --hard 仍为高危 → Deny（不在白名单）
+        assert!(matches!(
+            classify_command_with_level("git reset --hard", "/tmp/project", RiskLevel::Standard),
+            CommandAction::Deny(_)
+        ));
     }
 }
