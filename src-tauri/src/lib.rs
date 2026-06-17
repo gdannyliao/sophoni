@@ -404,6 +404,7 @@ fn run_desktop() {
         Arc::new(std::sync::atomic::AtomicU16::new(0));
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
@@ -456,6 +457,8 @@ fn run_desktop() {
 #[cfg(mobile)]
 fn run_mobile() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_barcode_scanner::init())
+        .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![get_app_status,])

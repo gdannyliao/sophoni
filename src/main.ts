@@ -4,12 +4,14 @@ import { isMobile } from "./lib/mobile/platform";
 import App from "./App.svelte";
 import MobileApp from "./MobileApp.svelte";
 
-// 平台分流：移动端（Android/iOS）走 MobileApp（配对 + mobile-api），
-// 桌面端走 App（Tauri IPC）。Tauri 构建期注入 import.meta.env.TAURI_ENV_PLATFORM。
-const Root = isMobile() ? MobileApp : App;
+// 平台分流：移动端（Android/iOS）走 MobileApp，桌面端走 App。
+// 用 @tauri-apps/plugin-os 运行时检测（异步 IPC），比编译期 env 变量可靠。
+async function bootstrap() {
+  const mobile = await isMobile();
+  const Root = mobile ? MobileApp : App;
+  mount(Root, {
+    target: document.getElementById("app")!,
+  });
+}
 
-const app = mount(Root, {
-  target: document.getElementById("app")!,
-});
-
-export default app;
+bootstrap();

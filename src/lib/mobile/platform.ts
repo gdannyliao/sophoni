@@ -1,17 +1,20 @@
 /**
- * 平台检测。Tauri 2 在构建期通过 Vite 注入 import.meta.env.TAURI_ENV_PLATFORM。
- * 值为 "android" / "ios" 时是移动端，"macos"/"linux"/"windows" 是桌面端。
+ * 平台检测。用 @tauri-apps/plugin-os 的 platform() 运行时检测，
+ * 比 import.meta.env 编译期变量更可靠（dev 模式下 env 注入不稳定）。
  *
- * 用编译期变量而非运行时 UA 嗅探——Tauri 确保它在打包时正确注入。
+ * 注意：platform() 是异步 IPC 调用，所以 isMobile 是 async。
+ * main.ts 在 mount 前调用，确保分流正确。
  */
 
-/** 是否移动端（Android / iOS）。决定走 mobile-api 还是桌面 api。 */
-export function isMobile(): boolean {
-  const platform = import.meta.env.TAURI_ENV_PLATFORM;
-  return platform === "android" || platform === "ios";
-}
+import { platform } from "@tauri-apps/plugin-os";
 
-/** 是否桌面端。 */
-export function isDesktop(): boolean {
-  return !isMobile();
+/** 是否移动端（Android / iOS）。异步，因为要调原生 IPC。 */
+export async function isMobile(): Promise<boolean> {
+  try {
+    const p = await platform();
+    return p === "android" || p === "ios";
+  } catch {
+    // IPC 失败（极端情况）按桌面处理
+    return false;
+  }
 }

@@ -44,6 +44,7 @@ tower = "0.5"
 tower-http = { version = "0.6", features = ["cors"] }
 qrcode = "0.14"
 tokio-stream = "0.1"
+tauri-plugin-os = "2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
