@@ -849,6 +849,28 @@ mod tests {
         }
     }
 
+    fn web_search_call(query: &str) -> AgentToolCall {
+        AgentToolCall {
+            id: "call-ws".to_string(),
+            name: AgentToolName::WebSearch,
+            arguments: AgentToolArgs::WebSearch {
+                query: query.to_string(),
+                max_results: 5,
+            },
+        }
+    }
+
+    fn web_fetch_call(url: &str) -> AgentToolCall {
+        AgentToolCall {
+            id: "call-wf".to_string(),
+            name: AgentToolName::WebFetch,
+            arguments: AgentToolArgs::WebFetch {
+                url: url.to_string(),
+                max_chars: 8000,
+            },
+        }
+    }
+
     #[tokio::test]
     async fn tool_read_file_returns_content() {
         let root = std::env::temp_dir().join(format!("sophoni-tool-{}", uuid::Uuid::new_v4()));
@@ -1599,6 +1621,47 @@ mod tests {
         let out = truncate_output(input, 2, 4000);
         assert_eq!(out, "a\nb");
         assert!(!out.contains("截断"));
+    }
+
+    // ── web 工具测试 ──
+
+    #[tokio::test]
+    async fn web_search_unconfigured_returns_friendly_error() {
+        let root = std::env::temp_dir().join(format!("sophoni-ws-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let tools = ToolDispatcher::new(root.clone());
+        let result = tools.dispatch(&web_search_call("rust")).await.unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(result.is_error);
+        assert!(result.content.contains("未配置"));
+    }
+
+    #[tokio::test]
+    async fn web_search_not_blocked_by_chat_only() {
+        let root = std::env::temp_dir().join(format!("sophoni-ws-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let tools = ToolDispatcher::new(root.clone()).with_workspace_mode(WorkspaceMode::ChatOnly);
+        let result = tools.dispatch(&web_search_call("rust")).await.unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+        // ChatOnly 下 web_search 不被拦截（返回未配置错误而非"未选择工作区"）
+        assert!(result.is_error);
+        assert!(!result.content.contains("未选择工作区"));
+        assert!(result.content.contains("未配置"));
+    }
+
+    #[tokio::test]
+    async fn web_fetch_not_blocked_by_chat_only() {
+        let root = std::env::temp_dir().join(format!("sophoni-wf-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let tools = ToolDispatcher::new(root.clone()).with_workspace_mode(WorkspaceMode::ChatOnly);
+        // file:// scheme 会被 web_fetch 拒绝（scheme 校验），证明工具被调用而非被 ChatOnly 拦截
+        let result = tools
+            .dispatch(&web_fetch_call("file:///etc/passwd"))
+            .await
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(result.is_error);
+        assert!(!result.content.contains("未选择工作区"));
     }
 
     // ── WorkspaceMode 测试 ──
