@@ -51,3 +51,13 @@ export interface SearchConfig {
   googleKey: string | null;
   googleCx: string | null;
 }
+
+export interface ScheduledTask {
+  id: string;
+  prompt: string;
+  hour: number;
+  minute: number;
+  enabled: boolean;
+  lastRunAt: string | null;
+  createdAt: string;
+}

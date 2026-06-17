@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AgentEvent, AgentTaskResult, CommandConfirmRequest, CommandRisk, ConfigStatus, Conversation, ConversationSummary, RiskLevel, SearchConfig } from "./types";
+import type { AgentEvent, AgentTaskResult, CommandConfirmRequest, CommandRisk, ConfigStatus, Conversation, ConversationSummary, RiskLevel, ScheduledTask, SearchConfig } from "./types";
 
 export async function getAppStatus(): Promise<string> {
   return invoke<string>("get_app_status");
@@ -89,4 +89,18 @@ export interface PairQrCode {
   ip: string;
   port: number;
   code: string;
+}
+
+// ── 定时任务（SchedulePanel 管理 UI 用）──
+
+export async function listScheduledTasks(): Promise<ScheduledTask[]> {
+  return invoke<ScheduledTask[]>("list_scheduled_tasks");
+}
+
+export async function updateScheduledTask(id: string, enabled: boolean): Promise<void> {
+  await invoke("update_scheduled_task", { id, enabled });
+}
+
+export async function deleteScheduledTask(id: string): Promise<void> {
+  await invoke("delete_scheduled_task_cmd", { id });
 }
