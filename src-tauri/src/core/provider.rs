@@ -140,7 +140,10 @@ pub struct OpenAICompatibleProvider {
 impl OpenAICompatibleProvider {
     pub fn new(config: AgentConfig, registry: std::sync::Arc<ToolRegistry>) -> Self {
         let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
+            // 仅对连接建立阶段设超时（防 DNS/TLS 握手卡死）；流式读取的总时长不在此限制，
+            // 由 complete_streaming 内的 60s 无活动超时负责——否则正常的长结果流式输出
+            // 会被 reqwest 的总超时误中断（表现为 stream error: error decoding response body）。
+            .connect_timeout(std::time::Duration::from_secs(30))
             .build()
             .expect("failed to build reqwest client");
         Self {
