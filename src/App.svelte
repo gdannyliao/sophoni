@@ -9,9 +9,9 @@
   import ConfirmDialog from "./lib/components/ConfirmDialog.svelte";
   import WelcomeView from "./lib/components/WelcomeView.svelte";
   import { open, confirm } from "@tauri-apps/plugin-dialog";
-  import { runAgentTask, cancelAgentTask, onAgentEvent, onCommandConfirm, resolveCommandConfirm, getWorkspacePath, setWorkspacePath, listConversationsGrouped, getConversation, deleteConversation } from "./lib/api";
+  import { runAgentTask, cancelAgentTask, onAgentEvent, onCommandConfirm, resolveCommandConfirm, getWorkspacePath, setWorkspacePath, listConversationsGrouped, getConversation, deleteConversation, getConfigStatus } from "./lib/api";
   import type { UnlistenFn } from "@tauri-apps/api/event";
-  import type { AgentEvent, CommandConfirmRequest, ConversationSummary, FileChange, WorkspaceGroup } from "./lib/types";
+  import type { AgentEvent, CommandConfirmRequest, ConfigStatus, ConversationSummary, FileChange, WorkspaceGroup } from "./lib/types";
 
   let events: AgentEvent[] = [];
   let fileChanges: FileChange[] = [];
@@ -26,6 +26,9 @@
   let showSchedule = false;
   let showMobilePair = false;
   let sidebarCollapsed = false;
+  // 配置状态缓存：onMount 查询一次，发送任务前据此拦截；用户改完配置关闭面板后刷新。
+  let configStatus: ConfigStatus | null = null;
+  let configError: string | null = null;
   let pendingConfirm: CommandConfirmRequest | null = null;
   let workspacePath: string | null = null;
   let groups: WorkspaceGroup[] = [];
@@ -38,8 +41,25 @@
     } catch {
       workspacePath = null;
     }
+    await refreshConfig();
     await refreshGroups();
   });
+
+  /** 查询 LLM 配置状态；未配置时设置 configError 提示文案。 */
+  async function refreshConfig() {
+    try {
+      configStatus = await getConfigStatus();
+    } catch {
+      configStatus = { configured: false, provider: "(未配置)", model: "(未配置)" };
+    }
+    configError = configStatus?.configured ? null : "未配置 LLM，无法发送任务。请在 ~/.config/sophoni/config.toml 配置 Provider。";
+  }
+
+  /** 关闭设置面板并刷新配置状态（用户可能刚改完配置）。 */
+  async function closeSettings() {
+    showSettings = false;
+    await refreshConfig();
+  }
 
   /** 加载所有工作区分组会话，并拍平出 conversations 给 WelcomeView 用。 */
   async function refreshGroups() {
@@ -50,6 +70,42 @@
     } catch {
       groups = [];
       conversations = [];
+    }
+  }
+
+  /** 乐观插入/更新一个会话到 groups（按 workspacePath 归组）和 conversations 列表。
+   *  用于发送新会话消息时立即在侧边栏显示占位项，不等待后端 conversation_created。 */
+  function upsertConversation(conv: ConversationSummary) {
+    if (conversations.some((c) => c.id === conv.id)) {
+      conversations = conversations.map((c) => (c.id === conv.id ? { ...c, ...conv } : c));
+    } else {
+      conversations = [conv, ...conversations];
+    }
+    // 归入 workspacePath 匹配的分组；找不到则创建临时分组
+    const norm = (p: string) => p.replace(/\/+$/, "");
+    const targetPath = norm(conv.workspacePath);
+    let group = groups.find((g) => norm(g.path) === targetPath);
+    if (!group) {
+      group = { id: targetPath || "chat", name: "", path: conv.workspacePath, conversations: [] };
+      groups = [...groups, group];
+    }
+    if (group.conversations.some((c) => c.id === conv.id)) {
+      group.conversations = group.conversations.map((c) => (c.id === conv.id ? { ...c, ...conv } : c));
+    } else {
+      group.conversations = [conv, ...group.conversations];
+    }
+    groups = [...groups];
+  }
+
+  /** 把占位会话的临时 id 替换为后端返回的真实 id（groups + conversations + activeConversationId）。 */
+  function replaceConversationId(oldId: string, newId: string) {
+    conversations = conversations.map((c) => (c.id === oldId ? { ...c, id: newId } : c));
+    for (const g of groups) {
+      g.conversations = g.conversations.map((c) => (c.id === oldId ? { ...c, id: newId } : c));
+    }
+    groups = [...groups];
+    if (activeConversationId === oldId) {
+      activeConversationId = newId;
     }
   }
 
@@ -124,12 +180,27 @@
   }
 
   async function runDemo(task: string) {
+    // 前置校验：未配置 LLM 时直接拦截，避免请求打到后端再静默失败。
+    if (!configStatus?.configured) {
+      configError = "未配置 LLM，无法发送任务。请在 ~/.config/sophoni/config.toml 配置 Provider。";
+      return;
+    }
     running = true;
     // 续聊（已有 activeConversationId）时保留历史 events，让连续消息累加显示在同一会话流里；
     // 新会话才清空。streamingText/fileChanges 每轮重置。
     const isNewConversation = activeConversationId === null;
+    // 任务启动时用户所在会话。新会话任务收到 conversation_created 后更新为真正的新会话 id。
+    // 用户若在此期间手动切换会话，activeConversationId 会与之不同——后续事件副作用应跳过，
+    // 避免新任务的执行过程覆盖用户当前查看的会话界面。
+    let taskConversationId = activeConversationId;
     if (isNewConversation) {
       events = [];
+      // 乐观插入占位会话：发送新会话消息时立即在侧边栏显示，不等后端 conversation_created
+      // （该事件到达前若用户切走，会以为会话丢失）。收到真实 id 后用 upsertConversation 替换。
+      const placeholderId = `pending-${Date.now()}`;
+      upsertConversation({ id: placeholderId, title: task.slice(0, 20) || "新对话", updatedAt: new Date().toISOString(), workspacePath: workspacePath ?? "" });
+      taskConversationId = placeholderId;
+      activeConversationId = placeholderId;
     }
     fileChanges = [];
     summary = "";
@@ -140,6 +211,28 @@
       // token 事件（流式增量）走 rAF 节流累积到 streamingText，避免每个 token 都 push
       // 进 events 数组导致 processEvents O(n²) 重算。其他事件仍走 events。
       unlisten = await onAgentEvent((e) => {
+        if (e.kind === "conversation_created") {
+          const realId = e.body;
+          if (isNewConversation) {
+            // 用户是否仍停留在占位会话：替换前 taskConversationId 是占位 id。
+            const stillOnPlaceholder = activeConversationId === taskConversationId;
+            // 用真实 id 替换占位会话（新会话场景 taskConversationId 已是占位 id，非空）
+            replaceConversationId(taskConversationId!, realId);
+            taskConversationId = realId;
+            // 用户没切走时同步展示会话；切走了则保留用户的选择
+            if (stillOnPlaceholder) {
+              activeConversationId = realId;
+            }
+          } else if (!conversations.some((c) => c.id === realId)) {
+            // 续聊任务后端也会发此事件，已有则跳过
+            upsertConversation({ id: realId, title: realId, updatedAt: new Date().toISOString(), workspacePath: workspacePath ?? "" });
+          }
+        }
+        // 用户若已手动切换到别的会话，后续事件不再追加到当前展示界面
+        // （事件仍由后端正常处理并落库，切回该会话时能看到）。
+        if (activeConversationId !== taskConversationId) {
+          return;
+        }
         if (e.kind === "token") {
           pendingBuffer += e.body;
           scheduleFlush();
@@ -148,13 +241,6 @@
             streamingText = "";
             pendingBuffer = "";
             rafScheduled = false;
-          }
-          if (e.kind === "conversation_created") {
-            activeConversationId = e.body;
-            // 新会话才往 sidebar 列表新增；复用会话时后端也会发此事件，靠 id 去重避免重复项
-            if (!conversations.some((c) => c.id === e.body)) {
-              conversations = [{ id: e.body, title: e.body, updatedAt: new Date().toISOString(), workspacePath: workspacePath ?? "" }, ...conversations];
-            }
           }
           events = [...events, e];
         }
@@ -243,10 +329,12 @@
       <WelcomeView
         {workspacePath}
         {conversations}
+        {configError}
         onStart={runDemo}
         onSelectConversation={selectConversation}
         onSelectWorkspace={selectWorkspace}
         onClearWorkspace={clearWorkspace}
+        onOpenSettings={() => (showSettings = true)}
       />
     {:else}
       <Conversation
@@ -270,11 +358,11 @@
     type="button"
     class="overlay"
     aria-label="关闭设置"
-    on:click={() => (showSettings = false)}
+    on:click={closeSettings}
   >
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <div class="overlay-content" role="dialog" aria-modal="true" tabindex="-1" on:click|stopPropagation>
-      <SettingsPanel onClose={() => (showSettings = false)} />
+      <SettingsPanel onClose={closeSettings} />
     </div>
   </button>
 {/if}

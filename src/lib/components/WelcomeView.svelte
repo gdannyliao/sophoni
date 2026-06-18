@@ -3,10 +3,12 @@
 
   export let workspacePath: string | null = null;
   export let conversations: ConversationSummary[] = [];
+  export let configError: string | null = null;
   export let onStart: (prompt: string) => void = () => {};
   export let onSelectConversation: (id: string) => void = () => {};
   export let onSelectWorkspace: () => void = () => {};
   export let onClearWorkspace: () => void = () => {};
+  export let onOpenSettings: () => void = () => {};
 
   let prompt = "";
 
@@ -49,6 +51,16 @@
         <button class="btn btn-primary" data-testid="welcome-start" on:click={handleSubmit}>开始</button>
       </div>
     </div>
+
+    {#if configError}
+      <div class="config-error-card" data-testid="welcome-config-error">
+        <div class="config-error-info">
+          <div class="config-error-title">⚠️ 未配置 LLM</div>
+          <div class="config-error-msg">{configError}</div>
+        </div>
+        <button class="btn config-error-btn" data-testid="welcome-open-settings" on:click={onOpenSettings}>打开设置</button>
+      </div>
+    {/if}
 
     <div class="workspace-card" data-testid="welcome-workspace">
       <span class="ws-icon">📁</span>
@@ -167,6 +179,27 @@
     border-radius: var(--radius-lg);
     padding: var(--space-3) var(--space-4);
   }
+  .config-error-card {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    background: var(--bg-secondary);
+    border: 1px solid var(--danger);
+    border-radius: var(--radius-lg);
+    padding: var(--space-3) var(--space-4);
+    margin-bottom: var(--space-3);
+  }
+  .config-error-info { flex: 1; min-width: 0; }
+  .config-error-title { font-size: 13px; font-weight: 600; color: var(--danger); }
+  .config-error-msg {
+    font-size: 11px;
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+    margin-top: var(--space-1);
+    word-break: break-all;
+  }
+  .config-error-btn { font-size: 12px; flex-shrink: 0; }
   .ws-icon { font-size: 18px; }
   .ws-info { flex: 1; overflow: hidden; }
   .ws-label { font-size: 13px; color: var(--text-secondary); }
