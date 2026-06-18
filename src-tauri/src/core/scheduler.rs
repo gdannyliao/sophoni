@@ -5,10 +5,8 @@
 //! 而是通过 fire 回调，由 lib.rs 注入实际逻辑。
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use chrono::Timelike;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
@@ -178,6 +176,7 @@ impl Scheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Timelike;
 
     #[test]
     fn seconds_until_future_time_within_24h() {

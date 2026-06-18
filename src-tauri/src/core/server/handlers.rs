@@ -8,7 +8,6 @@ use serde::Deserialize;
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::collections::HashMap;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;

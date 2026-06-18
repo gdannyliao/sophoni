@@ -11,7 +11,7 @@ pub use state::ServerState;
 
 use axum::{
     middleware,
-    routing::{get, post, put},
+    routing::{get, post},
     Router,
 };
 use tower_http::cors::CorsLayer;
