@@ -40,6 +40,14 @@ export interface ConversationSummary {
   id: string;
   title: string;
   updatedAt: string;
+  workspacePath: string;
+}
+
+export interface WorkspaceGroup {
+  id: string;
+  name: string;
+  path: string;
+  conversations: ConversationSummary[];
 }
 
 export interface Conversation extends ConversationSummary {

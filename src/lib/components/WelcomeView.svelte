@@ -6,6 +6,7 @@
   export let onStart: (prompt: string) => void = () => {};
   export let onSelectConversation: (id: string) => void = () => {};
   export let onSelectWorkspace: () => void = () => {};
+  export let onClearWorkspace: () => void = () => {};
 
   let prompt = "";
 
@@ -60,9 +61,14 @@
           <div class="ws-hint">选择工作区以启用文件读写和命令执行</div>
         {/if}
       </div>
-      <button class="btn ws-select-btn" data-testid="welcome-select-workspace" on:click={onSelectWorkspace}>
-        {workspacePath ? "切换" : "选择"}
-      </button>
+      <div class="ws-actions">
+        <button class="btn ws-select-btn" data-testid="welcome-select-workspace" on:click={onSelectWorkspace}>
+          {workspacePath ? "切换" : "选择"}
+        </button>
+        {#if workspacePath}
+          <button class="btn ws-clear-btn" data-testid="welcome-clear-workspace" on:click={onClearWorkspace}>清除</button>
+        {/if}
+      </div>
     </div>
 
     {#if workspacePath && conversations.length > 0}
@@ -76,7 +82,8 @@
             on:click={() => onSelectConversation(conv.id)}
             on:keydown={(e) => e.key === "Enter" && onSelectConversation(conv.id)}
           >
-            <span>💬</span> {conv.title}
+            <span class="recent-icon">💬</span>
+            <span class="recent-title" title={conv.title}>{conv.title}</span>
           </div>
         {/each}
       </div>
@@ -172,7 +179,9 @@
     white-space: nowrap;
   }
   .ws-hint { font-size: 11px; color: var(--accent); }
+  .ws-actions { display: flex; gap: var(--space-1); flex-shrink: 0; }
   .ws-select-btn { font-size: 12px; }
+  .ws-clear-btn { font-size: 12px; color: var(--danger); border-color: var(--danger); }
   .recent-section {
     width: 100%;
     margin-top: var(--space-4);
@@ -195,6 +204,15 @@
     font-size: 13px;
     cursor: pointer;
     margin-bottom: var(--space-1);
+    min-width: 0;
   }
   .recent-item:hover { background: var(--bg-tertiary); }
+  .recent-icon { flex-shrink: 0; }
+  .recent-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    min-width: 0;
+  }
 </style>

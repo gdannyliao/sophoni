@@ -58,6 +58,18 @@ pub struct ConversationSummary {
     pub id: Uuid,
     pub title: String,
     pub updated_at: DateTime<Utc>,
+    /// 会话所属工作区的路径（前端切换会话时显示精确工作区，归并后尤其重要）。
+    pub workspace_path: String,
+}
+
+/// 工作区及其会话列表（Sidebar 分组渲染用）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceGroup {
+    pub id: Uuid,
+    pub name: String,
+    pub path: String,
+    pub conversations: Vec<ConversationSummary>,
 }
 
 

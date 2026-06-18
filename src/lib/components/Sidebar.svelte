@@ -1,15 +1,14 @@
 <script lang="ts">
   import { getConfigStatus } from "../api";
-  import type { ConfigStatus, ConversationSummary } from "../types";
+  import type { ConfigStatus, WorkspaceGroup } from "../types";
   import { onMount } from "svelte";
 
   export let collapsed = false;
   export let onToggleCollapse: () => void = () => {};
   export let onOpenSettings: () => void = () => {};
   export let onOpenSchedule: () => void = () => {};
-  export let workspacePath: string | null = null;
-  export let onSelectWorkspace: () => void = () => {};
-  export let conversations: ConversationSummary[] = [];
+  export let onOpenMobilePair: () => void = () => {};
+  export let groups: WorkspaceGroup[] = [];
   export let activeConversationId: string | null = null;
   export let onSelectConversation: (id: string) => void = () => {};
   export let onNewConversation: () => void = () => {};
@@ -24,6 +23,13 @@
       status = { configured: false, provider: "(未配置)", model: "(未知)" };
     }
   });
+
+  /** 工作区显示名：优先 name，否则用 path 的最后一段目录名。 */
+  function wsName(g: WorkspaceGroup): string {
+    if (g.name) return g.name;
+    const parts = g.path.split("/").filter(Boolean);
+    return parts[parts.length - 1] || g.path;
+  }
 </script>
 
 <aside class="sidebar" class:collapsed aria-label="工作区与会话" data-testid="sidebar">
@@ -33,31 +39,34 @@
         <div class="brand">◈ Sophoni</div>
         <button class="btn new-btn" data-testid="new-conversation" on:click={onNewConversation} title="新建会话">+</button>
       </div>
-      <div class="section-label">会话</div>
-      {#each conversations as conv (conv.id)}
-        <div
-          class="session-item"
-          class:active={conv.id === activeConversationId}
-        >
-          <span class="session-title" role="button" tabindex="0" on:click={() => onSelectConversation(conv.id)} on:keydown={(e) => e.key === "Enter" && onSelectConversation(conv.id)}>
-            {conv.title.length > 12 ? conv.title.slice(0, 12) + "…" : conv.title}
-          </span>
-          <button class="delete-btn" data-testid="delete-conversation" on:click={() => onDeleteConversation(conv.id)} title="删除">✕</button>
-        </div>
-      {:else}
+      {#if groups.length === 0}
         <div class="session-empty">暂无会话</div>
-      {/each}
-    </div>
-    <div class="workspace-section">
-      {#if !workspacePath}
-        <div class="workspace-empty">未选择工作区</div>
-        <button class="btn workspace-btn" data-testid="workspace-open" on:click={onSelectWorkspace}>📁 打开工作区</button>
+      {:else}
+        {#each groups as group (group.id)}
+          <div class="ws-group">
+            <div class="ws-group-header" title={group.path}>{wsName(group)}</div>
+            {#each group.conversations as conv (conv.id)}
+              <div
+                class="session-item"
+                class:active={conv.id === activeConversationId}
+              >
+                <span class="session-title" role="button" tabindex="0" on:click={() => onSelectConversation(conv.id)} on:keydown={(e) => e.key === "Enter" && onSelectConversation(conv.id)}>
+                  {conv.title.length > 12 ? conv.title.slice(0, 12) + "…" : conv.title}
+                </span>
+                <button class="delete-btn" data-testid="delete-conversation" on:click={() => onDeleteConversation(conv.id)} title="删除">✕</button>
+              </div>
+            {/each}
+          </div>
+        {/each}
       {/if}
     </div>
     <div class="sidebar-footer">
       <div class="model-info">{status?.model ?? "..."}</div>
-      <button class="btn sidebar-settings-btn" data-testid="schedule-button" on:click={onOpenSchedule}>⏰ 定时</button>
-      <button class="btn sidebar-settings-btn" data-testid="settings-button" on:click={onOpenSettings}>⚙ 设置</button>
+      <div class="footer-actions">
+        <button class="btn icon-footer-btn" data-testid="settings-button" on:click={onOpenSettings} title="设置">⚙</button>
+        <button class="btn icon-footer-btn" data-testid="schedule-button" on:click={onOpenSchedule} title="定时任务">⏰</button>
+        <button class="btn icon-footer-btn" data-testid="mobile-pair-button" on:click={onOpenMobilePair} title="手机连接">📱</button>
+      </div>
     </div>
   {:else}
     <div class="sidebar-collapsed-content">
@@ -77,17 +86,22 @@
   }
   .sidebar:not(.collapsed) { width: 220px; }
   .sidebar.collapsed { width: 48px; }
-  .sidebar-content { flex: 1; padding: var(--space-4) var(--space-3); }
+  .sidebar-content { flex: 1; padding: var(--space-4) var(--space-3); overflow-y: auto; }
   .sidebar-collapsed-content { flex: 1; display: flex; flex-direction: column; align-items: center; padding-top: var(--space-4); }
-  .brand-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--space-6); }
+  .brand-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--space-4); }
   .brand { font-size: 15px; font-weight: 700; color: var(--accent); }
   .new-btn { padding: 2px 8px; font-size: 16px; line-height: 1; }
-  .section-label {
+  .ws-group { margin-bottom: var(--space-4); }
+  .ws-group-header {
     font-size: 11px;
     text-transform: uppercase;
     color: var(--text-secondary);
     margin-bottom: var(--space-2);
     letter-spacing: 0.5px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 600;
   }
   .session-item {
     display: flex;
@@ -128,31 +142,20 @@
     color: var(--text-secondary);
     font-size: 12px;
   }
-  .workspace-section {
-    padding: var(--space-3);
-    border-top: 1px solid var(--border);
-  }
-  .workspace-path {
-    font-size: 12px;
-    font-family: var(--font-mono);
-    color: var(--text-secondary);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    margin-bottom: var(--space-2);
-  }
-  .workspace-empty {
-    font-size: 12px;
-    color: var(--text-secondary);
-    margin-bottom: var(--space-2);
-  }
-  .workspace-btn { width: 100%; }
-  .sidebar-footer {
-    padding: var(--space-3);
-    border-top: 1px solid var(--border);
-  }
   .model-info { font-size: 11px; color: var(--text-secondary); margin-bottom: var(--space-2); }
-  .sidebar-settings-btn { width: 100%; text-align: left; }
+  .footer-actions { display: flex; gap: var(--space-2); }
+  .icon-footer-btn {
+    flex: 1;
+    padding: var(--space-2);
+    font-size: 16px;
+    text-align: center;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--bg-primary);
+    color: var(--text-secondary);
+    cursor: pointer;
+  }
+  .icon-footer-btn:hover { background: var(--bg-tertiary); color: var(--text-primary); }
   .icon-btn {
     border: 0;
     background: transparent;

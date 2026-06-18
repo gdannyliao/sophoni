@@ -397,6 +397,15 @@ async fn list_conversations(
     Ok(storage.list_conversations(&ws.id)?)
 }
 
+/// 列出所有工作区及其会话（按工作区分组，Sidebar 多工作区视图用）。
+#[tauri::command]
+async fn list_conversations_grouped(
+    state: State<'_, AppState>,
+) -> Result<Vec<core::domain::WorkspaceGroup>, AppError> {
+    let storage = state.storage.lock().await;
+    Ok(storage.list_conversations_grouped()?)
+}
+
 #[tauri::command]
 async fn get_conversation(
     state: State<'_, AppState>,
@@ -627,6 +636,7 @@ fn run_desktop() {
             get_search_config,
             save_search_config,
             list_conversations,
+            list_conversations_grouped,
             get_conversation,
             delete_conversation,
             get_pair_qrcode,

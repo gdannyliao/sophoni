@@ -1,7 +1,9 @@
 <script lang="ts">
   import { marked } from "marked";
   import { tick } from "svelte";
+  import { getRiskLevel, setRiskLevel } from "../api";
   import type { AgentEvent } from "../types";
+  import type { RiskLevel } from "../types";
   import MessageBubble from "./MessageBubble.svelte";
   import ThoughtLine from "./ThoughtLine.svelte";
   import CommandCard from "./CommandCard.svelte";
@@ -19,6 +21,28 @@
   export let onRun: (prompt: string) => void = () => {};
   export let onCancel: () => void = () => {};
   export let onReview: () => void = () => {};
+
+  // 风险等级（仅选了工作区时显示，ChatOnly 模式无意义）。
+  let riskLevel: RiskLevel = "standard";
+  let riskReady = false;
+
+  async function loadRiskLevel() {
+    try {
+      riskLevel = await getRiskLevel();
+    } catch {
+      // 默认 standard
+    }
+    riskReady = true;
+  }
+
+  async function onRiskLevelChange(e: Event) {
+    const target = e.target as HTMLInputElement;
+    riskLevel = target.value as RiskLevel;
+    await setRiskLevel(riskLevel);
+  }
+
+  // 有工作区且非移动端时加载风险等级（移动端由桌面端管理，不需 UI 切换）
+  $: if (workspacePath && !mobile && !riskReady) loadRiskLevel();
 
   // 消息区容器引用，用于 token 到达时自动滚动到底部。
   let messagesEl: HTMLDivElement | null = null;
@@ -270,6 +294,23 @@
       <button type="button" class="btn cancel-btn" on:click={onCancel}>取消</button>
     {/if}
   </form>
+
+  {#if riskReady}
+    <div class="risk-bar" data-testid="risk-bar">
+      <span class="risk-label">权限</span>
+      <div class="risk-pills">
+        {#each [["standard", "标准"], ["relaxed", "宽松"], ["unrestricted", "完全"]] as [val, label]}
+          <button
+            type="button"
+            class="risk-pill"
+            class:active={riskLevel === val}
+            data-testid="risk-pill-{val}"
+            on:click={() => { riskLevel = val as RiskLevel; setRiskLevel(val as RiskLevel); }}
+          >{label}</button>
+        {/each}
+      </div>
+    </div>
+  {/if}
 </main>
 
 <style>
@@ -425,6 +466,32 @@
   .composer input::placeholder { color: var(--text-secondary); }
   .cancel-btn { color: var(--danger); border-color: var(--danger); }
 
+  /* ── 输入框下方的权限宽容度选择器 ── */
+  .risk-bar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-1) var(--space-4) var(--space-2);
+    background: var(--bg-secondary);
+    border-top: 1px solid var(--border);
+    font-size: 12px;
+  }
+  .risk-label { color: var(--text-secondary); flex-shrink: 0; }
+  .risk-pills { display: flex; gap: var(--space-1); }
+  .risk-pill {
+    padding: 2px var(--space-2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--bg-primary);
+    color: var(--text-secondary);
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .risk-pill.active {
+    background: var(--accent-bg, #4a9eff);
+    color: white;
+    border-color: var(--accent-bg, #4a9eff);
+  }
   /* ── 移动端适配：mobile prop 为 true 时生效 ── */
   .conversation.mobile .messages {
     padding: var(--space-3);

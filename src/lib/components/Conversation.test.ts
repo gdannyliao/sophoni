@@ -1,5 +1,10 @@
 import { render, screen, fireEvent } from "@testing-library/svelte";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("../api", () => ({
+  getRiskLevel: vi.fn().mockResolvedValue("standard"),
+  setRiskLevel: vi.fn().mockResolvedValue(undefined),
+}));
 import Conversation from "./Conversation.svelte";
 
 describe("Conversation", () => {
@@ -313,5 +318,27 @@ describe("Conversation", () => {
     // 但 summary 可见，折叠控件显示步数（含 tool_read 1 步）
     expect(screen.getByTestId("summary-card")).toBeInTheDocument();
     expect(screen.getByTestId("collapse-toggle").textContent).toContain("已执行 1 步");
+    });
+});
+
+// ── 风险等级选择器（仅桌面端选了工作区时显示）──
+describe("Conversation 风险等级", () => {
+  it("选了工作区时显示权限选择器", async () => {
+    render(Conversation, { props: { workspacePath: "/tmp/test", mobile: false } });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.getByTestId("risk-bar")).toBeInTheDocument();
+    expect(screen.getByTestId("risk-pill-standard")).toBeInTheDocument();
+    expect(screen.getByTestId("risk-pill-relaxed")).toBeInTheDocument();
+    expect(screen.getByTestId("risk-pill-unrestricted")).toBeInTheDocument();
+  });
+
+  it("移动端不显示风险等级", () => {
+    render(Conversation, { props: { workspacePath: "移动端", mobile: true } });
+    expect(screen.queryByTestId("risk-bar")).not.toBeInTheDocument();
+  });
+
+  it("无工作区时不显示风险等级", () => {
+    render(Conversation, { props: { workspacePath: "", mobile: false } });
+    expect(screen.queryByTestId("risk-bar")).not.toBeInTheDocument();
   });
 });

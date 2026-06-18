@@ -128,7 +128,7 @@
               activeConversationId = e.body;
               if (!conversations.some((c) => c.id === e.body)) {
                 conversations = [
-                  { id: e.body, title: e.body, updatedAt: new Date().toISOString() },
+                  { id: e.body, title: e.body, updatedAt: new Date().toISOString(), workspacePath: "" },
                   ...conversations,
                 ];
               }

@@ -215,7 +215,11 @@ impl Storage {
         workspace_id: &Uuid,
     ) -> AppResult<Vec<ConversationSummary>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, title, updated_at FROM conversations WHERE workspace_id = ?1 ORDER BY updated_at DESC",
+            "SELECT c.id, c.title, c.updated_at, w.path
+             FROM conversations c
+             JOIN workspaces w ON c.workspace_id = w.id
+             WHERE c.workspace_id = ?1
+             ORDER BY c.updated_at DESC",
         )?;
         let mut rows = stmt.query(params![workspace_id.to_string()])?;
         let mut conversations = Vec::new();
@@ -236,9 +240,28 @@ impl Storage {
                         )
                     })?
                     .with_timezone(&Utc),
+                workspace_path: row.get(3)?,
             });
         }
         Ok(conversations)
+    }
+
+    /// 列出所有工作区及其会话（按工作区分组，Sidebar 多工作区视图用）。
+    /// 工作区按 last_opened_at 倒序，每个工作区内会话按 updated_at 倒序。
+    pub fn list_conversations_grouped(&self) -> AppResult<Vec<super::domain::WorkspaceGroup>> {
+        use super::domain::WorkspaceGroup;
+        let workspaces = self.list_workspaces()?;
+        let mut groups = Vec::with_capacity(workspaces.len());
+        for ws in workspaces {
+            let conversations = self.list_conversations(&ws.id)?;
+            groups.push(WorkspaceGroup {
+                id: ws.id,
+                name: ws.name,
+                path: ws.path,
+                conversations,
+            });
+        }
+        Ok(groups)
     }
 
     pub fn get_conversation(&self, id: &Uuid) -> AppResult<Conversation> {
