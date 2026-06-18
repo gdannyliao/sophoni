@@ -26,7 +26,7 @@ pub struct AgentTaskResult {
     pub turns: Vec<ConversationTurn>,
 }
 
-const MAX_ROUNDS: usize = 12;
+const MAX_ROUNDS: usize = 20;
 
 pub(crate) fn command_description(level: super::command_risk::RiskLevel) -> String {
     use super::command_risk::RiskLevel;
@@ -68,11 +68,11 @@ fn system_prompt(
         ),
         RiskLevel::Relaxed => (
             "- run_command：执行命令（测试、构建、安装依赖、git 操作等）。高危命令会请求用户确认。",
-            "\n10. 用户要求删除/移动/复制文件时，用 run_command 执行 rm/mv/cp 命令。高危操作会弹窗请求用户确认，确认后自动执行。",
+            "用户要求删除/移动/复制文件时，用 run_command 执行 rm/mv/cp 命令。高危操作会弹窗请求用户确认，确认后自动执行。",
         ),
         RiskLevel::Unrestricted => (
             "- run_command：执行命令（测试、构建、文件操作、安装依赖等，工作区内不限）。",
-            "\n10. 用户要求删除/移动/复制文件时，用 run_command 执行 rm/mv/cp 命令。工作区内路径直接执行，工作区外路径会请求用户确认。",
+            "用户要求删除/移动/复制文件时，用 run_command 执行 rm/mv/cp 命令。工作区内路径直接执行，工作区外路径会请求用户确认。",
         ),
     };
     format!("你是桌面工作区 Agent。只能操作工作区内文件。
@@ -95,15 +95,16 @@ fn system_prompt(
 - delete_scheduled_task：删除定时任务（需先 list 获取 id）。
 
 工作方式：
-1. 不确定路径时，先 list_files 或 grep 探索。
-2. 改文件前，先用 read_file 看当前内容。
-3. 小改动优先用 edit_file（给出要替换的原文和新文本），大改动或新建文件用 write_file。同一文件有多处改动时用 multi_edit_file 一次完成，比多次 edit_file 省轮次。
-4. edit_file/multi_edit_file 的 old_string 必须与文件内容精确匹配（含缩进和空格）。
-5. 当用户要求替换「所有」或「全部」时，用 edit_file 的 replace_all=true，一次替换所有匹配，不要分多次单独替换。
-6. 改完代码后，用 run_command 跑 cargo check 或 cargo test 验证改动是否正确。如果命令失败，读 stderr 定位问题并修正。
-7. 验收时优先用 read_acceptance_report 看 report.json，重点检查 ok 和 failureSummary；失败或信息不足时再用 read_runtime_log 查看相关日志。
-8. 不要在回复里直接给文件内容，通过工具操作。
-9. 完成任务后给出简短总结。{file_ops_hint}")
+1. 探索代码库要高效：优先用 list_files recursive=true 一次性列全结构（自动忽略 node_modules，最多 200 项），再用 grep/read_file 针对性深入关键文件，不要逐目录浅层探索浪费轮次。
+2. 面对大任务（整理架构、重构、全面审查）：先用 1-2 次工具调用摸清结构就尽快给出方案，宁可基于部分信息给出概览，也不要把所有轮次耗在探索上导致无法产出结论。
+3. 改文件前，先用 read_file 看当前内容。
+4. 小改动优先用 edit_file（给出要替换的原文和新文本），大改动或新建文件用 write_file。同一文件有多处改动时用 multi_edit_file 一次完成，比多次 edit_file 省轮次。
+5. edit_file/multi_edit_file 的 old_string 必须与文件内容精确匹配（含缩进和空格）。
+6. 当用户要求替换「所有」或「全部」时，用 edit_file 的 replace_all=true，一次替换所有匹配，不要分多次单独替换。
+7. 改完代码后，用 run_command 跑 cargo check 或 cargo test 验证改动是否正确。如果命令失败，读 stderr 定位问题并修正。
+8. 验收时优先用 read_acceptance_report 看 report.json，重点检查 ok 和 failureSummary；失败或信息不足时再用 read_runtime_log 查看相关日志。
+9. 不要在回复里直接给文件内容，通过工具操作。
+{category_rule}{file_ops_hint}")
 }
 
 /// 去掉模型输出中的 <think>...</think> 思维链标签（MiniMax-M3 等模型会输出）。
@@ -178,8 +179,7 @@ pub fn build_memory_context(memories: &[super::domain::ConversationMemory]) -> S
     text
 }
 
-const PER_ROUND_TIMEOUT: Duration = Duration::from_secs(30);
-const OVERALL_TIMEOUT: Duration = Duration::from_secs(120);
+const OVERALL_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Abstraction over "where events go". In production this emits via Tauri's
 /// AppHandle; in tests it collects into a buffer. Keeps the loop testable
@@ -245,6 +245,11 @@ pub async fn run_agent_task(
         },
     );
 
+    // 轮次预算提醒：剩余轮次 ≤ 阈值时注入一次系统提醒，打断 agent 的探索惯性、
+    // 迫使其收敛产出结论。用 User 角色（ConversationTurn 无 System 变体）。
+    let mut reminder_injected = false;
+    const REMINDER_THRESHOLD: usize = 5;
+
     for round in 0..MAX_ROUNDS {
         if cancel.load(Ordering::Relaxed) {
             warn!("agent: 用户取消");
@@ -252,9 +257,22 @@ pub async fn run_agent_task(
             break;
         }
         if Instant::now() >= deadline {
-            warn!("agent: 达到整体超时(120s)");
-            push(&mut events, sink, error_event("达到整体超时(120s)"));
+            warn!("agent: 达到整体超时(300s)");
+            push(&mut events, sink, error_event("达到整体超时(300s)"));
             break;
+        }
+
+        // 剩余轮次不足时注入提醒（只注入一次）。放循环顶部、本轮 provider 调用前，
+        // 避免破坏 Tool turn 必须紧跟带 tool_calls 的 Assistant turn 的消息序列。
+        let remaining = MAX_ROUNDS - round;
+        if remaining <= REMINDER_THRESHOLD && !reminder_injected {
+            turns.push(ConversationTurn::User {
+                content: format!(
+                    "[系统提醒] 当前已进入任务收尾阶段，剩余可用轮次仅 {} 轮。请立即停止继续探索或读取文件，基于已掌握的信息总结发现并给出最终结论。",
+                    remaining
+                ),
+            });
+            reminder_injected = true;
         }
 
         // 流式回调：token 实时 emit 给前端，同时累积到 round_text 供本轮结束时判断
@@ -276,18 +294,16 @@ pub async fn run_agent_task(
         };
 
         let round_start = Instant::now();
-        let response = tokio::time::timeout(
-            PER_ROUND_TIMEOUT,
-            provider.complete_streaming(&system, &turns, &schemas, &on_token),
-        )
-        .await;
+        let response = provider
+            .complete_streaming(&system, &turns, &schemas, &on_token)
+            .await;
         let round_elapsed_ms = round_start.elapsed().as_millis();
         let round_text_val = round_text.lock().map(|s| s.clone()).unwrap_or_default();
         // 后端日志：每轮耗时，便于定位延迟瓶颈。
         info!(round = round + 1, elapsed_ms = round_elapsed_ms, "agent round");
 
         let calls = match response {
-            Ok(Ok(ProviderResponse::FinalAnswer(text))) => {
+            Ok(ProviderResponse::FinalAnswer(text)) => {
                 let clean = strip_think_tags(&text);
                 emit_round_timing(&mut events, sink, round + 1, round_elapsed_ms, "最终答案");
                 push(&mut events, sink, summary_event(&clean));
@@ -299,7 +315,7 @@ pub async fn run_agent_task(
                 });
                 break;
             }
-            Ok(Ok(ProviderResponse::ToolCalls(calls))) => {
+            Ok(ProviderResponse::ToolCalls(calls)) => {
                 let call_count = calls.len();
                 // 工具调用轮：若有累积的推理文本，落定为 thought 事件（前端淡色展示）。
                 if !round_text_val.is_empty() {
@@ -317,19 +333,13 @@ pub async fn run_agent_task(
                 emit_round_timing(&mut events, sink, round + 1, round_elapsed_ms, &format!("工具调用×{call_count}"));
                 calls
             }
-            Ok(Err(e)) => {
+            Err(e) => {
                 emit_round_timing(&mut events, sink, round + 1, round_elapsed_ms, "Provider 错误");
                 push(
                     &mut events,
                     sink,
                     error_event(&format!("Provider 错误: {e}")),
                 );
-                break;
-            }
-            Err(_elapsed) => {
-                emit_round_timing(&mut events, sink, round + 1, PER_ROUND_TIMEOUT.as_millis(), "单轮超时");
-                warn!(round = round + 1, "agent: 单轮超时(30s)");
-                push(&mut events, sink, error_event("单轮超时(30s)"));
                 break;
             }
         };
@@ -360,7 +370,7 @@ pub async fn run_agent_task(
     // If we exited the loop without a FinalAnswer and without an explicit
     // error event, surface the max-rounds stop as an error so the user sees why.
     if !events.iter().any(|e| e.kind == "summary") && !events.iter().any(|e| e.kind == "error") {
-        push(&mut events, sink, error_event("达到最大轮次(12),已停止"));
+        push(&mut events, sink, error_event("达到最大轮次(20),已停止"));
     }
 
     let summary = events

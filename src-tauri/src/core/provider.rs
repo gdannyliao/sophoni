@@ -331,7 +331,22 @@ impl AgentProvider for OpenAICompatibleProvider {
             };
         }
 
-        while let Some(chunk_res) = stream.next().await {
+        // 无活动超时：每次等待下一个 chunk 最多 STREAM_IDLE_TIMEOUT，持续来数据则永不超时。
+        // 只抓真正卡住（网络中断/模型无响应），不误杀正常的长结果流式输出
+        // （原来 agent 层的 30s 总时长超时会砍断长报告的流式输出）。
+        const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+        loop {
+            let next = tokio::time::timeout(STREAM_IDLE_TIMEOUT, stream.next()).await;
+            let chunk_res = match next {
+                Ok(Some(c)) => c,
+                Ok(None) => break, // 流正常结束
+                Err(_elapsed) => {
+                    warn!(idle_secs = STREAM_IDLE_TIMEOUT.as_secs(), "provider: 流式响应无活动超时");
+                    return Err(AppError::Provider(
+                        "流式响应无活动超时(60s)，可能是网络中断或模型无响应".into(),
+                    ));
+                }
+            };
             let bytes = chunk_res.map_err(|e| {
                 warn!(error = %e, "provider: stream error");
                 AppError::Provider(format!("stream error: {e}"))

@@ -126,6 +126,35 @@ fn is_ignored_dir(entry: &walkdir::DirEntry) -> bool {
             .unwrap_or(false)
 }
 
+/// list_files 自动附带摘要的工程入口/配置文件名。命中时附上前若干行内容，
+/// 让 agent 不必逐个 read_file 就能了解架构（减少探索轮次）。
+const KEY_FILE_NAMES: &[&str] = &[
+    "package.json",
+    "Cargo.toml",
+    "project.json",
+    "tsconfig.json",
+    "jsconfig.json",
+    "pyproject.toml",
+    "go.mod",
+    "build.gradle",
+    "pom.xml",
+    "requirements.txt",
+    "template.json",
+    "README.md",
+];
+const SUMMARY_MAX_LINES: usize = 20;
+const SUMMARY_MAX_CHARS: usize = 500;
+const SUMMARY_MAX_FILES: usize = 5;
+
+/// 判断某文件是否为「关键文件」（值得在 list_files 输出里附带摘要）。
+fn is_key_file(rel: &std::path::Path) -> bool {
+    let name = match rel.file_name().and_then(|n| n.to_str()) {
+        Some(n) => n,
+        None => return false,
+    };
+    KEY_FILE_NAMES.contains(&name)
+}
+
 fn find_actual_string(content: &str, old_string: &str) -> Option<String> {
     if content.contains(old_string) {
         return Some(old_string.to_string());
@@ -398,6 +427,7 @@ impl ToolSpec for ListFilesTool {
     }
     fn dispatch(&self, call: &AgentToolCall) -> ToolFuture {
         let root = self.fs.root().to_path_buf();
+        let fs = self.fs.clone();
         let call_id = call.id.clone();
         let (path, recursive) = match &call.arguments {
             AgentToolArgs::ListFiles { path, recursive } => (path.clone(), *recursive),
@@ -414,6 +444,7 @@ impl ToolSpec for ListFilesTool {
                 None => root.clone(),
             };
             let mut entries = Vec::new();
+            let mut key_files: Vec<std::path::PathBuf> = Vec::new();
             let walker = WalkDir::new(&target)
                 .follow_links(false)
                 .max_depth(if recursive { MAX_DEPTH } else { 1 })
@@ -433,6 +464,13 @@ impl ToolSpec for ListFilesTool {
                     "file"
                 };
                 let rel = entry.path().strip_prefix(&root).unwrap_or(entry.path());
+                // 命中关键文件时收集（用于稍后附摘要），受 SUMMARY_MAX_FILES 限制
+                if kind == "file"
+                    && key_files.len() < SUMMARY_MAX_FILES
+                    && is_key_file(rel)
+                {
+                    key_files.push(rel.to_path_buf());
+                }
                 entries.push(format!("{kind}  {}", rel.display()));
                 if entries.len() >= LIST_FILES_MAX {
                     break;
@@ -445,6 +483,22 @@ impl ToolSpec for ListFilesTool {
             }
             if truncated {
                 content.push_str(&format!("\n（结果已截断，只显示前 {LIST_FILES_MAX} 项）"));
+            }
+            // 对命中的关键文件附上内容摘要，让 agent 一次 list 就了解入口/配置，
+            // 减少后续 read_file 调用（截断时跳过摘要，避免基于不完整列表误导）。
+            if !key_files.is_empty() && !truncated {
+                let mut summary = String::from("\n\n=== 关键文件摘要 ===");
+                for rel in &key_files {
+                    let full = root.join(rel);
+                    match fs.read_text(&full) {
+                        Ok(text) => {
+                            let snippet = truncate_output(&text, SUMMARY_MAX_LINES, SUMMARY_MAX_CHARS);
+                            summary.push_str(&format!("\n── {} (摘要) ──\n{}", rel.display(), snippet));
+                        }
+                        Err(_) => continue,
+                    }
+                }
+                content.push_str(&summary);
             }
             Ok(AgentToolResult {
                 tool_call_id: call_id,
